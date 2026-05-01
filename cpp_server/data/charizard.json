@@ -1,0 +1,23 @@
+{
+  "speciesID": 6,
+  "level": 50,
+  "nature": "adamant",
+  "ability": "blaze",
+  "ivs": {
+    "hp": 31,
+    "attack": 31,
+    "defense": 31,
+    "specialAttack": 31,
+    "specialDefense": 31,
+    "speed": 31
+  },
+  "evs": {
+    "hp": 0,
+    "attack": 252,
+    "defense": 0,
+    "specialAttack": 0,
+    "specialDefense": 0,
+    "speed": 252
+  },
+  "moves": [1, 2, 3, 8]
+}

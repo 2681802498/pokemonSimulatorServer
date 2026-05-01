@@ -1,0 +1,271 @@
+{
+  "actor": "",
+  "event": "pass_result",
+  "field": {
+    "duration": 0,
+    "type": "none"
+  },
+  "side_a": {
+    "active_index": 0,
+    "active_pokemon": {
+      "ability": "blaze",
+      "current_hp": 1,
+      "is_fainted": false,
+      "item": "none",
+      "level": 50,
+      "max_hp": 1,
+      "moves": [
+        {
+          "accuracy": 100,
+          "max_pp": 25,
+          "name": "Ember",
+          "power": 40,
+          "pp": 25,
+          "type": "fire"
+        },
+        {
+          "accuracy": 100,
+          "max_pp": 15,
+          "name": "Dragon Claw",
+          "power": 80,
+          "pp": 15,
+          "type": "dragon"
+        },
+        {
+          "accuracy": 100,
+          "max_pp": 25,
+          "name": "Water Gun",
+          "power": 40,
+          "pp": 25,
+          "type": "water"
+        },
+        {
+          "accuracy": 100,
+          "max_pp": 10,
+          "name": "Protect",
+          "power": 0,
+          "pp": 10,
+          "type": "normal"
+        }
+      ],
+      "name": "",
+      "nature": "hardy",
+      "stat_stages": {
+        "attack": 0,
+        "defense": 0,
+        "special_attack": 0,
+        "special_defense": 0,
+        "speed": 0
+      },
+      "stats": {
+        "attack": 20,
+        "defense": 20,
+        "special_attack": 20,
+        "special_defense": 20,
+        "speed": 20
+      },
+      "statuses": [],
+      "type1": "normal",
+      "type2": "normal"
+    },
+    "name": "Player-1",
+    "pokemon_count": 1,
+    "team": [
+      {
+        "ability": "blaze",
+        "current_hp": 1,
+        "is_fainted": false,
+        "item": "none",
+        "level": 50,
+        "max_hp": 1,
+        "moves": [
+          {
+            "accuracy": 100,
+            "max_pp": 25,
+            "name": "Ember",
+            "power": 40,
+            "pp": 25,
+            "type": "fire"
+          },
+          {
+            "accuracy": 100,
+            "max_pp": 15,
+            "name": "Dragon Claw",
+            "power": 80,
+            "pp": 15,
+            "type": "dragon"
+          },
+          {
+            "accuracy": 100,
+            "max_pp": 25,
+            "name": "Water Gun",
+            "power": 40,
+            "pp": 25,
+            "type": "water"
+          },
+          {
+            "accuracy": 100,
+            "max_pp": 10,
+            "name": "Protect",
+            "power": 0,
+            "pp": 10,
+            "type": "normal"
+          }
+        ],
+        "name": "",
+        "nature": "hardy",
+        "stat_stages": {
+          "attack": 0,
+          "defense": 0,
+          "special_attack": 0,
+          "special_defense": 0,
+          "speed": 0
+        },
+        "stats": {
+          "attack": 20,
+          "defense": 20,
+          "special_attack": 20,
+          "special_defense": 20,
+          "speed": 20
+        },
+        "statuses": [],
+        "type1": "normal",
+        "type2": "normal"
+      }
+    ]
+  },
+  "side_b": {
+    "active_index": 0,
+    "active_pokemon": {
+      "ability": "torrent",
+      "current_hp": 0,
+      "is_fainted": true,
+      "item": "none",
+      "level": 50,
+      "max_hp": 1,
+      "moves": [
+        {
+          "accuracy": 100,
+          "max_pp": 25,
+          "name": "Ember",
+          "power": 40,
+          "pp": 25,
+          "type": "fire"
+        },
+        {
+          "accuracy": 100,
+          "max_pp": 15,
+          "name": "Dragon Claw",
+          "power": 80,
+          "pp": 15,
+          "type": "dragon"
+        },
+        {
+          "accuracy": 100,
+          "max_pp": 25,
+          "name": "Water Gun",
+          "power": 40,
+          "pp": 25,
+          "type": "water"
+        },
+        {
+          "accuracy": 100,
+          "max_pp": 10,
+          "name": "Protect",
+          "power": 0,
+          "pp": 10,
+          "type": "normal"
+        }
+      ],
+      "name": "",
+      "nature": "hardy",
+      "stat_stages": {
+        "attack": 0,
+        "defense": 0,
+        "special_attack": 0,
+        "special_defense": 0,
+        "speed": 0
+      },
+      "stats": {
+        "attack": 20,
+        "defense": 20,
+        "special_attack": 20,
+        "special_defense": 20,
+        "speed": 20
+      },
+      "statuses": [],
+      "type1": "normal",
+      "type2": "normal"
+    },
+    "name": "Player-2",
+    "pokemon_count": 1,
+    "team": [
+      {
+        "ability": "torrent",
+        "current_hp": 0,
+        "is_fainted": true,
+        "item": "none",
+        "level": 50,
+        "max_hp": 1,
+        "moves": [
+          {
+            "accuracy": 100,
+            "max_pp": 25,
+            "name": "Ember",
+            "power": 40,
+            "pp": 25,
+            "type": "fire"
+          },
+          {
+            "accuracy": 100,
+            "max_pp": 15,
+            "name": "Dragon Claw",
+            "power": 80,
+            "pp": 15,
+            "type": "dragon"
+          },
+          {
+            "accuracy": 100,
+            "max_pp": 25,
+            "name": "Water Gun",
+            "power": 40,
+            "pp": 25,
+            "type": "water"
+          },
+          {
+            "accuracy": 100,
+            "max_pp": 10,
+            "name": "Protect",
+            "power": 0,
+            "pp": 10,
+            "type": "normal"
+          }
+        ],
+        "name": "",
+        "nature": "hardy",
+        "stat_stages": {
+          "attack": 0,
+          "defense": 0,
+          "special_attack": 0,
+          "special_defense": 0,
+          "speed": 0
+        },
+        "stats": {
+          "attack": 20,
+          "defense": 20,
+          "special_attack": 20,
+          "special_defense": 20,
+          "speed": 20
+        },
+        "statuses": [],
+        "type1": "normal",
+        "type2": "normal"
+      }
+    ]
+  },
+  "turn": 1,
+  "weather": {
+    "duration": 0,
+    "type": "clear"
+  }
+}

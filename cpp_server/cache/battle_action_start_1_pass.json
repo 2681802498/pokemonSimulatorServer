@@ -1,0 +1,6 @@
+{
+  "actor": "Blastoise",
+  "event": "action_start",
+  "priority": 21,
+  "type": "pass"
+}

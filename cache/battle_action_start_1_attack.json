@@ -1,0 +1,8 @@
+{
+  "actor": "",
+  "event": "action_start",
+  "move": "Ember",
+  "priority": 20,
+  "target": "",
+  "type": "attack"
+}

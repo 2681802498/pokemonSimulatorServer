@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go-server/api/calc"
 	"go-server/internal/protocol"
 	"go-server/internal/rpc"
 	"hash/crc32"
@@ -44,8 +43,8 @@ func (r *GameRoom) StartGame(s *Session) {
 	log.Printf("[Room] 房间 %s 准备同步至 C++ 节点 [%d]...", r.ID, targetNodeID)
 
 	go func() {
-		node, ok := rpc.Mgr.GetNodeByID(targetNodeID)
-		if !ok {
+		node, err := r.EngineConn.GetNodeByPodIndex(targetNodeID)
+		if err != nil {
 			r.handleStartError(r.ID, "目标物理节点已离线")
 			return
 		}
@@ -53,10 +52,7 @@ func (r *GameRoom) StartGame(s *Session) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
 
-		resp, err := node.Client.CreateRoom(ctx, &calc.CreateRoomRequest{
-			RoomId:   r.ID,
-			InitJson: initJSON,
-		})
+		resp, err := rpc.CallCreateRoom(ctx, node.GetClient(), r.ID, initJSON)
 
 		if err != nil {
 			r.handleStartError(r.ID, fmt.Sprintf("C++ 引擎调用失败: %v", err))
@@ -223,8 +219,8 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 		return
 	}
 
-	node, ok := rpc.Mgr.GetNodeByID(targetNodeID)
-	if !ok {
+	node, err := r.EngineConn.GetNodeByPodIndex(targetNodeID)
+	if err != nil {
 		s.SendResponse("battle_action_res", protocol.CodeCppRPCError, "目标 C++ 节点不可用", nil)
 		return
 	}
@@ -232,11 +228,7 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	resp, err := node.Client.SendCommand(ctx, &calc.GameCommand{
-		RoomId:   r.ID,
-		PlayerId: s.Player.ID,
-		Action:   string(rawAction),
-	})
+	resp, err := rpc.CallSendCommand(ctx, node.GetClient(), r.ID, s.Player.ID, string(rawAction))
 	if err != nil {
 		s.SendResponse("battle_action_res", protocol.CodeCppRPCError, fmt.Sprintf("C++ 调用失败: %v", err), nil)
 		return

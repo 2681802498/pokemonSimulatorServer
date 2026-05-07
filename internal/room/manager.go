@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go-server/api/calc"
 	"go-server/configs"
+	"go-server/internal/engine"
 	"go-server/internal/model"
 	"go-server/internal/protocol"
 	"go-server/internal/rpc"
@@ -30,6 +30,7 @@ type GameRoom struct {
 	Status       RoomStatus
 	NodeID       int
 	ReadyPlayers map[string]bool // 记录玩家是否已选择宝可梦
+	EngineConn   *engine.EngineInstance
 	mu           sync.Mutex
 }
 
@@ -37,6 +38,7 @@ type RoomManager struct {
 	Rooms       map[string]*GameRoom
 	AllSessions map[string]*Session
 	Store       *store.RedisStore
+	EngineConn  *engine.EngineInstance
 	mu          sync.RWMutex
 }
 
@@ -46,11 +48,12 @@ type RoomInfo struct {
 }
 
 // 新建一个房间管理器，负责管理所有房间和玩家会话，并与 Redis 存储交互以实现状态持久化和恢复
-func NewRoomManager(redisStore *store.RedisStore) *RoomManager {
+func NewRoomManager(redisStore *store.RedisStore, engineConn *engine.EngineInstance) *RoomManager {
 	return &RoomManager{
 		Rooms:       make(map[string]*GameRoom),
 		AllSessions: make(map[string]*Session),
 		Store:       redisStore,
+		EngineConn:  engineConn,
 		mu:          sync.RWMutex{},
 	}
 }
@@ -78,7 +81,7 @@ func (rm *RoomManager) ReassignWaitingRoomsFromNode(deadNodeID int) (moved int, 
 	rm.mu.RUnlock()
 
 	for _, r := range targetRooms {
-		node, err := rpc.Mgr.GetNodeByRoomID(r.ID)
+		node, err := rm.EngineConn.GetNodeForRoom(r.ID)
 		if err != nil {
 			log.Printf("[Failover] 房间 %s 重分配失败：找不到可用节点 err=%v", r.ID, err)
 			skipped++
@@ -92,10 +95,10 @@ func (rm *RoomManager) ReassignWaitingRoomsFromNode(deadNodeID int) (moved int, 
 			continue
 		}
 		oldNodeID := r.NodeID
-		r.NodeID = node.ID
+		r.NodeID = node.PodIndex
 		r.mu.Unlock()
 
-		log.Printf("[Failover] 房间 %s 节点重分配: %d -> %d", r.ID, oldNodeID, node.ID)
+		log.Printf("[Failover] 房间 %s 节点重分配: %d -> %d", r.ID, oldNodeID, node.PodIndex)
 		rm.persistRoomSnapshot(r)
 		moved++
 	}
@@ -116,7 +119,7 @@ func (rm *RoomManager) CreateRoom(s *Session) (string, bool) {
 		}
 	}
 
-	node, err := rpc.Mgr.GetNodeByRoomID(roomID)
+	node, err := rm.EngineConn.GetNodeForRoom(roomID)
 	if err != nil {
 		s.SendResponse("create_room_res", protocol.CodeCppRPCError, "算力集群暂不可用", nil)
 		return "", false
@@ -127,8 +130,9 @@ func (rm *RoomManager) CreateRoom(s *Session) (string, bool) {
 		ID:           roomID,
 		Status:       RoomWaiting,
 		Sessions:     make(map[string]*Session),
-		NodeID:       node.ID,
+		NodeID:       node.PodIndex,
 		ReadyPlayers: make(map[string]bool),
+		EngineConn:   rm.EngineConn,
 	}
 	rm.Rooms[roomID] = newRoom
 
@@ -248,12 +252,12 @@ func (rm *RoomManager) DeleteRoom(roomID string) {
 	rm.deleteRoomSnapshot(roomID)
 
 	if status != RoomWaiting {
-		node, ok := rpc.Mgr.GetNodeByID(targetNodeID)
-		if ok {
+		node, err := rm.EngineConn.GetNodeByPodIndex(targetNodeID)
+		if err == nil {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 				defer cancel()
-				resp, err := node.Client.DestroyRoom(ctx, &calc.DestroyRoomRequest{RoomId: roomID})
+				resp, err := rpc.CallDestroyRoom(ctx, node.GetClient(), roomID)
 				if err != nil {
 					log.Printf("[Room] 战斗中销毁失败, RoomID: %s, Error: %v", roomID, err)
 				}

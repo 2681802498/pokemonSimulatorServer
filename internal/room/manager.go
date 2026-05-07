@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go-server/api/calc"
 	"go-server/configs"
 	"go-server/internal/model"
 	"go-server/internal/protocol"
@@ -253,7 +252,7 @@ func (rm *RoomManager) DeleteRoom(roomID string) {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 				defer cancel()
-				resp, err := node.Client.DestroyRoom(ctx, &calc.DestroyRoomRequest{RoomId: roomID})
+				resp, err := rpc.CallDestroyRoom(ctx, node.Client, roomID)
 				if err != nil {
 					log.Printf("[Room] 战斗中销毁失败, RoomID: %s, Error: %v", roomID, err)
 				}

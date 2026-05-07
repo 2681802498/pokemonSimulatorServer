@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go-server/api/calc"
 	"go-server/internal/protocol"
 	"go-server/internal/rpc"
 	"hash/crc32"
@@ -53,10 +52,7 @@ func (r *GameRoom) StartGame(s *Session) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
 
-		resp, err := node.Client.CreateRoom(ctx, &calc.CreateRoomRequest{
-			RoomId:   r.ID,
-			InitJson: initJSON,
-		})
+		resp, err := rpc.CallCreateRoom(ctx, node.Client, r.ID, initJSON)
 
 		if err != nil {
 			r.handleStartError(r.ID, fmt.Sprintf("C++ 引擎调用失败: %v", err))
@@ -232,11 +228,7 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	resp, err := node.Client.SendCommand(ctx, &calc.GameCommand{
-		RoomId:   r.ID,
-		PlayerId: s.Player.ID,
-		Action:   string(rawAction),
-	})
+	resp, err := rpc.CallSendCommand(ctx, node.Client, r.ID, s.Player.ID, string(rawAction))
 	if err != nil {
 		s.SendResponse("battle_action_res", protocol.CodeCppRPCError, fmt.Sprintf("C++ 调用失败: %v", err), nil)
 		return

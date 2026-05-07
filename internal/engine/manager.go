@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"go-server/api/calc"
 	"go-server/configs"
 	"go-server/internal/protocol"
 	"go-server/internal/room"
@@ -25,7 +24,7 @@ type EngineInstance struct {
 	Addr        string
 	Cmd         *exec.Cmd
 	Conn        *grpc.ClientConn
-	Client      calc.CalculatorClient
+	Client      rpc.EngineClient
 	ActiveRooms int32      // 当前房间数
 	MaxCapacity int32      // 最大承载能力
 	IsHealthy   bool       // 节点是否健康
@@ -75,7 +74,7 @@ func (ep *EnginePool) freePort(port int) {
 	delete(ep.usedPorts, port)
 }
 
-//新建引擎池
+// 新建引擎池
 func NewEnginePool() *EnginePool {
 	pool := &EnginePool{
 		Instances: make(map[int]*EngineInstance),
@@ -177,7 +176,7 @@ func (ep *EnginePool) CheckAndScale() {
 	}
 }
 
-//开启引擎实例
+// 开启引擎实例
 func (ep *EnginePool) startInstance(id int, port int) {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	log.Printf("[Engine] 启动参数: bin=%s, port=%d, data_dir=%s", configs.CppBinPath, port, configs.CppDataDir)
@@ -211,7 +210,7 @@ func (ep *EnginePool) startInstance(id int, port int) {
 		log.Printf("[Engine] 警告：无法连接到 %s: %v", addr, err)
 	}
 
-	client := calc.NewCalculatorClient(conn)
+	client := rpc.NewEngineClient(conn)
 	inst := &EngineInstance{
 		ID:          id,
 		Port:        port,
@@ -238,7 +237,7 @@ func (ep *EnginePool) startInstance(id int, port int) {
 	}(inst, outfile)
 }
 
-//监视引擎实例，自动重启
+// 监视引擎实例，自动重启
 func (ep *EnginePool) watchInstance(inst *EngineInstance) {
 	// 等待进程结束
 	_ = inst.Cmd.Wait()
@@ -272,7 +271,7 @@ func (ep *EnginePool) watchInstance(inst *EngineInstance) {
 	ep.startInstance(inst.ID, inst.Port)
 }
 
-//选择出负载最低的实例（最适合填入的实例/c++服务器）
+// 选择出负载最低的实例（最适合填入的实例/c++服务器）
 func (ep *EnginePool) PickBestInstance() (*EngineInstance, error) {
 	ep.mu.RLock()
 	defer ep.mu.RUnlock()
@@ -331,7 +330,7 @@ func (ep *EnginePool) PickBestInstance() (*EngineInstance, error) {
 	return best, nil
 }
 
-//从引擎池中关闭实例
+// 从引擎池中关闭实例
 func (ep *EnginePool) shutdownInstance(id int) {
 	ep.mu.Lock()
 	inst, ok := ep.Instances[id]
@@ -370,7 +369,7 @@ func (ep *EnginePool) shutdownInstance(id int) {
 	rpc.Mgr.RemoveNode(id)
 }
 
-//关闭整个引擎池
+// 关闭整个引擎池
 func (ep *EnginePool) Shutdown() {
 	ep.mu.Lock()
 	if ep.isClosing {
@@ -396,7 +395,7 @@ func (ep *EnginePool) Shutdown() {
 	}
 }
 
-//每五秒与引擎节点同步一次状态，更新负载信息和健康状态
+// 每五秒与引擎节点同步一次状态，更新负载信息和健康状态
 func (ep *EnginePool) monitorNodes() {
 	ticker := time.NewTicker(5 * time.Second) // 每 5 秒同步一次负载
 	for range ticker.C {
@@ -420,7 +419,7 @@ func (ep *EnginePool) monitorNodes() {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 				defer cancel()
 
-				resp, err := node.Client.GetHeartbeat(ctx, &calc.HeartbeatRequest{})
+				resp, err := rpc.CallGetHeartbeat(ctx, node.Client)
 
 				node.mu.Lock()
 				defer node.mu.Unlock()
@@ -441,7 +440,7 @@ func (ep *EnginePool) monitorNodes() {
 	}
 }
 
-//返回c++服务器集群状态
+// 返回c++服务器集群状态
 func (ep *EnginePool) GetClusterStatus() ClusterStatusResponse {
 	ep.mu.RLock()
 	defer ep.mu.RUnlock()
@@ -477,7 +476,7 @@ func (ep *EnginePool) GetClusterStatus() ClusterStatusResponse {
 	return res
 }
 
-//返回c++服务器集群状态的响应
+// 返回c++服务器集群状态的响应
 func (ep *EnginePool) StatusResponse(s *room.Session) {
 	statusData := ep.GetClusterStatus()
 	s.SendResponse("cluster_status_res", protocol.CodeSuccess, "获取集群状态成功", statusData)

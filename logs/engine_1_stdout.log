@@ -163,3 +163,6 @@ Error: Species with ID 9 not found
 [Engine] Data dir: /Users/why/Documents/goLang/goServerRemake/./cpp_server/data
 [Engine] Working dir: /Users/why/Documents/goLang/goServerRemake/cpp_server
 C++ Worker Engine running on 0.0.0.0:50051
+[Engine] Data dir: /Users/why/Documents/goLang/goServerRemake/./cpp_server/data
+[Engine] Working dir: /Users/why/Documents/goLang/goServerRemake/cpp_server
+C++ Worker Engine running on 0.0.0.0:50051

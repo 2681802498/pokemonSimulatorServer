@@ -1,6 +1,10 @@
 package configs
 
-import "time"
+import (
+	"os"
+	"strconv"
+	"time"
+)
 
 const (
 	// C++ 引擎相关配置
@@ -19,11 +23,33 @@ const (
 
 	ReconnectionTimeout = 10 * time.Second // 玩家断开后保留 Session 的时间
 
+	MaxPlayersPerRoom       = 2 //房间最大人数
+	RoomStatusCheckInterval = 5 * time.Second
+)
+
+// 可通过环境变量覆盖的 Redis 配置，默认指向本地开发环境
+var (
 	RedisAddr     = "127.0.0.1:6379"
 	RedisPassword = ""
 	RedisDB       = 0
 	RedisTTL      = 2 * time.Hour
-
-	MaxPlayersPerRoom       = 2 //房间最大人数
-	RoomStatusCheckInterval = 5 * time.Second
 )
+
+func init() {
+	if v := os.Getenv("REDIS_ADDR"); v != "" {
+		RedisAddr = v
+	}
+	if v := os.Getenv("REDIS_PASSWORD"); v != "" {
+		RedisPassword = v
+	}
+	if v := os.Getenv("REDIS_DB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			RedisDB = n
+		}
+	}
+	if v := os.Getenv("REDIS_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			RedisTTL = d
+		}
+	}
+}

@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-func InitGameRouters(router *Router, rm *room.RoomManager, ep *engine.EnginePool) {
+func InitGameRouters(router *Router, rm *room.RoomManager, engineConn *engine.EngineInstance) {
 
 	router.Register("cluster_status", func(s *room.Session, req *protocol.GameRequest, l *slog.Logger) {
 		l.Info("处理 cluster_status 指令")
-		ep.StatusResponse(s)
+		s.SendResponse("cluster_status_res", protocol.CodeSuccess, "获取集群状态成功", engineConn.GetStatus())
 	})
 
 	router.Register("create_room", func(s *room.Session, req *protocol.GameRequest, l *slog.Logger) {

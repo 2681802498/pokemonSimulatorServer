@@ -2,16 +2,19 @@ package room
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"go-server/api/calc"
 	"go-server/configs"
+	"go-server/internal/engine"
 	"go-server/internal/model"
 	"go-server/internal/protocol"
 	"go-server/internal/rpc"
 	"go-server/internal/store"
+	"hash/crc32"
 	"log"
-	"math/rand"
+	"sort"
 	"sync"
 	"time"
 )
@@ -30,6 +33,7 @@ type GameRoom struct {
 	Status       RoomStatus
 	NodeID       int
 	ReadyPlayers map[string]bool // 记录玩家是否已选择宝可梦
+	EngineConn   *engine.EngineInstance
 	mu           sync.Mutex
 }
 
@@ -37,6 +41,7 @@ type RoomManager struct {
 	Rooms       map[string]*GameRoom
 	AllSessions map[string]*Session
 	Store       *store.RedisStore
+	EngineConn  *engine.EngineInstance
 	mu          sync.RWMutex
 }
 
@@ -45,62 +50,46 @@ type RoomInfo struct {
 	IsFull bool   `json:"is_full"`
 }
 
-// 新建一个房间管理器，负责管理所有房间和玩家会话，并与 Redis 存储交互以实现状态持久化和恢复
-func NewRoomManager(redisStore *store.RedisStore) *RoomManager {
+// 新建一个房间管理器，负责管理所有房间和玩家会话，并从 Redis 恢复 C++ 侧写入的房间状态
+func NewRoomManager(redisStore *store.RedisStore, engineConn *engine.EngineInstance) *RoomManager {
 	return &RoomManager{
 		Rooms:       make(map[string]*GameRoom),
 		AllSessions: make(map[string]*Session),
 		Store:       redisStore,
+		EngineConn:  engineConn,
 		mu:          sync.RWMutex{},
 	}
 }
 
 func (rm *RoomManager) RestoreFromStore(ctx context.Context, nodeID int) error {
+	if rm.Store == nil {
+		return nil
+	}
+
+	snapshots, err := rm.Store.ListRoomSnapshots(ctx)
+	if err != nil {
+		return fmt.Errorf("list room snapshots failed: %w", err)
+	}
+
+	loaded := 0
+	for _, snapshot := range snapshots {
+		if snapshot.RoomID == "" {
+			continue
+		}
+		if nodeID > 0 && snapshot.NodeID != nodeID {
+			continue
+		}
+
+		rm.restoreRoomSnapshot(snapshot)
+		loaded++
+	}
+
+	if moved, skipped := rm.ReassignRunningRoomsFromUnavailableNodes(); moved > 0 || skipped > 0 {
+		log.Printf("[Redis] 启动恢复后完成房间重分配 moved=%d skipped=%d", moved, skipped)
+	}
+
+	log.Printf("[Redis] 已从 Redis 恢复房间快照 count=%d", loaded)
 	return nil
-}
-
-// 从redis中恢复房间（等待状态的房间）状态，利用C++节点ID进行过滤，确保只恢复属于当前节点的房间
-func (rm *RoomManager) ReassignWaitingRoomsFromNode(deadNodeID int) (moved int, skipped int) {
-	if deadNodeID <= 0 {
-		return 0, 0
-	}
-
-	rm.mu.RLock()
-	targetRooms := make([]*GameRoom, 0)
-	for _, r := range rm.Rooms {
-		r.mu.Lock()
-		shouldMove := r.NodeID == deadNodeID && r.Status == RoomWaiting
-		r.mu.Unlock()
-		if shouldMove {
-			targetRooms = append(targetRooms, r)
-		}
-	}
-	rm.mu.RUnlock()
-
-	for _, r := range targetRooms {
-		node, err := rpc.Mgr.GetNodeByRoomID(r.ID)
-		if err != nil {
-			log.Printf("[Failover] 房间 %s 重分配失败：找不到可用节点 err=%v", r.ID, err)
-			skipped++
-			continue
-		}
-
-		r.mu.Lock()
-		if r.Status != RoomWaiting || r.NodeID != deadNodeID {
-			r.mu.Unlock()
-			skipped++
-			continue
-		}
-		oldNodeID := r.NodeID
-		r.NodeID = node.ID
-		r.mu.Unlock()
-
-		log.Printf("[Failover] 房间 %s 节点重分配: %d -> %d", r.ID, oldNodeID, node.ID)
-		rm.persistRoomSnapshot(r)
-		moved++
-	}
-
-	return moved, skipped
 }
 
 // 创建房间
@@ -116,19 +105,14 @@ func (rm *RoomManager) CreateRoom(s *Session) (string, bool) {
 		}
 	}
 
-	node, err := rpc.Mgr.GetNodeByRoomID(roomID)
-	if err != nil {
-		s.SendResponse("create_room_res", protocol.CodeCppRPCError, "算力集群暂不可用", nil)
-		return "", false
-	}
-
 	//新建房间
 	newRoom := &GameRoom{
 		ID:           roomID,
 		Status:       RoomWaiting,
 		Sessions:     make(map[string]*Session),
-		NodeID:       node.ID,
+		NodeID:       0, // 先设置为0，后续会分配
 		ReadyPlayers: make(map[string]bool),
+		EngineConn:   rm.EngineConn,
 	}
 	rm.Rooms[roomID] = newRoom
 
@@ -139,10 +123,8 @@ func (rm *RoomManager) CreateRoom(s *Session) (string, bool) {
 	newRoom.ReadyPlayers[s.Player.ID] = false
 	newRoom.mu.Unlock()
 
-	log.Printf("房间 [%s] 已创建, 玩家 [%s] 加入, 预分配至 C++ 节点 [%s]", roomID, s.Player.ID, node.Addr)
+	log.Printf("房间 %s 创建成功，创建者: %s，等待开始游戏后分配节点", roomID, s.Player.ID)
 	s.SendResponse("create_room_res", protocol.CodeSuccess, "房间创建成功", map[string]string{"room_id": roomID})
-	rm.persistSessionBinding(s.Player.ID, roomID)
-	rm.persistRoomSnapshot(newRoom)
 
 	return roomID, true
 }
@@ -185,8 +167,6 @@ func (rm *RoomManager) JoinRoom(roomID string, s *Session) (bool, string) {
 
 	s.SendResponse("join_room_res", protocol.CodeSuccess, "成功加入房间", nil)
 	room.BroadcastToRoom("join_room", protocol.CodeSuccess, fmt.Sprintf("玩家%s加入了房间", s.Player.ID), nil)
-	rm.persistSessionBinding(s.Player.ID, roomID)
-	rm.persistRoomSnapshot(room)
 
 	return true, ""
 }
@@ -209,23 +189,20 @@ func (rm *RoomManager) LeaveRoom(roomID string, s *Session) {
 	r.mu.Unlock()
 
 	s.RoomID = ""
-	rm.deleteSessionBinding(s.Player.ID)
 
 	if remainingCount == 0 {
 		rm.DeleteRoom(roomID)
 	} else {
 		msg := "Player Left! (playerID: " + s.Player.ID + ")"
-		rm.Rooms[roomID].BroadcastToRoom(msg, protocol.CodeSuccess, fmt.Sprintf("玩家%s已离开", s.Player.ID), nil)
+		r.BroadcastToRoom(msg, protocol.CodeSuccess, fmt.Sprintf("玩家%s已离开", s.Player.ID), nil)
 
 		r.mu.Lock()
 		if r.Status == RoomPlaying {
 			r.Status = RoomFinished
 			r.mu.Unlock()
-			rm.Rooms[roomID].BroadcastToRoom("room_status_change", protocol.CodeSuccess, "游戏因玩家离开而停止", nil)
-			rm.persistRoomSnapshot(r)
+			r.BroadcastToRoom("room_status_change", protocol.CodeSuccess, "游戏因玩家离开而停止", nil)
 		} else {
 			r.mu.Unlock()
-			rm.persistRoomSnapshot(r)
 		}
 	}
 }
@@ -245,17 +222,28 @@ func (rm *RoomManager) DeleteRoom(roomID string) {
 
 	delete(rm.Rooms, roomID)
 	rm.mu.Unlock()
-	rm.deleteRoomSnapshot(roomID)
 
 	if status != RoomWaiting {
-		node, ok := rpc.Mgr.GetNodeByID(targetNodeID)
-		if ok {
+		node, err := rm.EngineConn.GetNodeByPodIndex(targetNodeID)
+		if err == nil {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[Room] panic recovered during DestroyRoom for %s: %v", roomID, r)
+					}
+				}()
+
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 				defer cancel()
-				resp, err := node.Client.DestroyRoom(ctx, &calc.DestroyRoomRequest{RoomId: roomID})
+				resp, err := rpc.CallDestroyRoom(ctx, node.GetClient(), roomID)
 				if err != nil {
 					log.Printf("[Room] 战斗中销毁失败, RoomID: %s, Error: %v", roomID, err)
+					return
+				}
+
+				if resp == nil {
+					log.Printf("[Room] 战斗中销毁失败, RoomID: %s, resp == nil", roomID)
+					return
 				}
 
 				if resp.Code != 0 {
@@ -291,9 +279,14 @@ func (rm *RoomManager) GetRooms() []RoomInfo {
 	return roomList
 }
 
-// 生成房间ID，6位数字字符串，理论上支持100万房间，实际使用中会有重复概率，但可以接受，之后会再新建房间时候进行检查
+// 生成房间ID：使用加密随机数，避免多 Pod 使用相同 math/rand 序列导致房号重复。
 func generateRoomID() string {
-	return fmt.Sprintf("%06d", rand.Intn(1000000))
+	buf := make([]byte, 8)
+	if _, err := crand.Read(buf); err != nil {
+		// 极端情况下退回到时间戳，避免创建失败
+		return fmt.Sprintf("room-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 // 查找玩家会话
@@ -312,7 +305,7 @@ func (rm *RoomManager) RegisterSession(uid string, s *Session) {
 }
 
 // 清除断线玩家
-func (rm *RoomManager) CleanUpIfStillOffline(uid string, roomID string) {
+func (rm *RoomManager) CleanUpIfStillOffline(uid string) {
 	rm.mu.Lock()
 
 	s, exists := rm.AllSessions[uid]
@@ -320,6 +313,8 @@ func (rm *RoomManager) CleanUpIfStillOffline(uid string, roomID string) {
 		rm.mu.Unlock()
 		return
 	}
+
+	roomID := s.RoomID
 
 	log.Printf("玩家 [%s] 超时未重连，执行彻底清理", uid)
 	delete(rm.AllSessions, uid)
@@ -380,90 +375,261 @@ func (rm *RoomManager) SyncRoomState(s *Session) {
 	})
 }
 
-// 保存房间快照，利用房间GameRoom里的数据
-func (rm *RoomManager) persistRoomSnapshot(r *GameRoom) {
-	if rm.Store == nil || r == nil {
-		return
+// 从房间快照里恢复玩家会话，主要是为了在玩家断线重连时能够恢复到之前的状态，包含房间ID、房间状态和当前房间内玩家列表等信息
+func (rm *RoomManager) restoreRoomSnapshot(snapshot store.RoomSnapshot) {
+	r := &GameRoom{
+		ID:           snapshot.RoomID,
+		Status:       RoomStatus(snapshot.Status),
+		NodeID:       snapshot.NodeID,
+		Sessions:     make(map[string]*Session),
+		ReadyPlayers: make(map[string]bool),
+		EngineConn:   rm.EngineConn,
 	}
 
-	snapshot := rm.buildRoomSnapshot(r)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := rm.Store.SaveRoomSnapshot(ctx, snapshot); err != nil {
-		log.Printf("[Redis] 保存房间快照失败 room=%s err=%v", r.ID, err)
-	}
-}
-
-// 构建快照，将房间内的玩家列表、准备状态、选择的宝可梦等信息打包成一个结构体，供持久化存储使用
-func (rm *RoomManager) buildRoomSnapshot(r *GameRoom) store.RoomSnapshot {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	players := make([]string, 0, len(r.Sessions))
-	readyPlayers := make(map[string]bool, len(r.ReadyPlayers))
-	selectedPokemon := make(map[string][]map[string]interface{}, len(r.Sessions))
-
-	for playerID, session := range r.Sessions {
-		players = append(players, playerID)
-		readyPlayers[playerID] = r.ReadyPlayers[playerID]
-
-		copiedTeam := make([]map[string]interface{}, 0, len(session.SelectedPokemon))
-		for _, pokemon := range session.SelectedPokemon {
-			copiedPokemon := make(map[string]interface{}, len(pokemon))
-			for key, value := range pokemon {
-				copiedPokemon[key] = value
-			}
-			copiedTeam = append(copiedTeam, copiedPokemon)
+	playerIDs := make(map[string]struct{}, len(snapshot.Players))
+	for _, playerID := range snapshot.Players {
+		if playerID == "" {
+			continue
 		}
-		selectedPokemon[playerID] = copiedTeam
+		playerIDs[playerID] = struct{}{}
+	}
+	for playerID := range snapshot.ReadyPlayers {
+		if playerID == "" {
+			continue
+		}
+		playerIDs[playerID] = struct{}{}
+	}
+	for playerID := range snapshot.SelectedPokemon {
+		if playerID == "" {
+			continue
+		}
+		playerIDs[playerID] = struct{}{}
 	}
 
-	return store.RoomSnapshot{
-		RoomID:          r.ID,
-		Status:          int(r.Status),
-		NodeID:          r.NodeID,
-		Players:         players,
-		ReadyPlayers:    readyPlayers,
-		SelectedPokemon: selectedPokemon,
-		UpdatedAt:       time.Now().Unix(),
+	for playerID := range playerIDs {
+		session := &Session{
+			Player: &model.Player{ID: playerID},
+			RoomID: snapshot.RoomID,
+			Send:   make(chan []byte, 256),
+		}
+		if team, ok := snapshot.SelectedPokemon[playerID]; ok {
+			session.SelectedPokemon = copySelectedPokemon(team)
+		}
+		r.Sessions[playerID] = session
+		r.ReadyPlayers[playerID] = snapshot.ReadyPlayers[playerID]
+		rm.AllSessions[playerID] = session
 	}
+
+	rm.mu.Lock()
+	rm.Rooms[r.ID] = r
+	rm.mu.Unlock()
+
+	log.Printf("[Redis] 已恢复房间快照 room=%s status=%d node=%d players=%d", r.ID, r.Status, r.NodeID, len(r.Sessions))
 }
 
-// 保存会话绑定信息，调用SaveSessionBinding
-func (rm *RoomManager) persistSessionBinding(userID, roomID string) {
-	if rm.Store == nil || userID == "" || roomID == "" {
-		return
+func copySelectedPokemon(team []map[string]interface{}) []map[string]interface{} {
+	if len(team) == 0 {
+		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := rm.Store.SaveSessionBinding(ctx, userID, roomID); err != nil {
-		log.Printf("[Redis] 保存会话绑定失败 user=%s room=%s err=%v", userID, roomID, err)
+	cloned := make([]map[string]interface{}, 0, len(team))
+	for _, pokemon := range team {
+		copiedPokemon := make(map[string]interface{}, len(pokemon))
+		for key, value := range pokemon {
+			copiedPokemon[key] = value
+		}
+		cloned = append(cloned, copiedPokemon)
 	}
+
+	return cloned
 }
 
-// 删除会话绑定信息，调用DeleteSessionBinding
-func (rm *RoomManager) deleteSessionBinding(userID string) {
-	if rm.Store == nil || userID == "" {
-		return
+func (rm *RoomManager) ReassignRunningRoomsFromUnavailableNodes() (moved int, skipped int) {
+	if rm.EngineConn == nil {
+		return 0, 0
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := rm.Store.DeleteSessionBinding(ctx, userID); err != nil {
-		log.Printf("[Redis] 删除会话绑定失败 user=%s err=%v", userID, err)
+	// 获取当前所有节点状态，找出健康的节点，并记录每个 pod 的 server_id
+	status := rm.EngineConn.GetStatus()
+	healthy := make(map[int]struct{}, len(status.Nodes))
+	podServerIDs := make(map[int]string, len(status.Nodes))
+	for _, node := range status.Nodes {
+		podServerIDs[node.PodIndex] = node.ServerID
+		if node.Healthy {
+			healthy[node.PodIndex] = struct{}{}
+		}
 	}
+	log.Printf("[Failover] 当前健康节点: %v", func() []int {
+		ids := make([]int, 0, len(healthy))
+		for id := range healthy {
+			ids = append(ids, id)
+		}
+		sort.Ints(ids)
+		return ids
+	}())
+
+	if len(healthy) == 0 {
+		log.Printf("[Failover] 无可用节点，无法重分配房间")
+		return 0, 0
+	}
+
+	rm.mu.RLock()
+	targetRooms := make([]*GameRoom, 0)
+	for _, r := range rm.Rooms {
+		r.mu.Lock()
+		nodeID := r.NodeID
+		r.mu.Unlock()
+
+		// 如果 node 不在健康集合里，加入待迁移列表
+		if _, ok := healthy[nodeID]; !ok {
+			targetRooms = append(targetRooms, r)
+			continue
+		}
+
+		// 如果 Redis 可用，尝试读取 snapshot 中的 server_id 与当前 pod 的 server_id 比对
+		if rm.Store != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			snap, err := rm.Store.LoadRoomSnapshot(ctx, r.ID)
+			cancel()
+			if err == nil && snap != nil && snap.ServerID != "" {
+				if podSID, ok := podServerIDs[nodeID]; ok {
+					if podSID != snap.ServerID {
+						// snapshot 中记录的 server_id 与当前 pod 的 server_id 不一致，触发迁移
+						targetRooms = append(targetRooms, r)
+						continue
+					}
+				}
+			}
+		}
+	}
+	rm.mu.RUnlock()
+
+	log.Printf("[Failover] 重分配房间为: %v", func() []string {
+		ids := make([]string, 0, len(targetRooms))
+		for _, r := range targetRooms {
+			ids = append(ids, r.ID)
+		}
+		return ids
+	}())
+
+	for _, r := range targetRooms {
+		r.mu.Lock()
+		currentNodeID := r.NodeID
+		currentStatus := r.Status
+		r.mu.Unlock()
+		log.Printf("[Failover] 准备重分配房间 %s, 当前NodeID=%d, Status=%d", r.ID, currentNodeID, currentStatus)
+
+		// 为每个受影响的房间重新选择一个健康节点，排除掉当前不可用的节点
+		newNode, err := rm.pickHealthyNodeForRoom(r.ID, r.NodeID)
+		if err != nil {
+			log.Printf("[Failover] 房间 %s 重分配失败：找不到可用节点 err=%v", r.ID, err)
+			skipped++
+			continue
+		}
+		log.Printf("[Failover] 房间 %s 选中新的目标节点: PodIndex=%d PodName=%s", r.ID, newNode.PodIndex, newNode.PodName)
+
+		r.mu.Lock()
+		oldNodeID := r.NodeID
+		roomStatus := r.Status
+		r.mu.Unlock()
+
+		// 对于进行中的房间，需要从 Redis 读取快照并向新 C++ 节点发送 CreateRoom 请求重新创建房间
+		if roomStatus == RoomPlaying {
+			if rm.Store == nil {
+				log.Printf("[Failover] 房间 %s (RoomPlaying) 无法恢复: Redis Store 未初始化", r.ID)
+				skipped++
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			snapshot, err := rm.Store.LoadRoomSnapshot(ctx, r.ID)
+			cancel()
+			if err != nil {
+				log.Printf("[Failover] 房间 %s 从 Redis 读取快照失败: %v", r.ID, err)
+				skipped++
+				continue
+			}
+
+			// 将快照转换为 initJSON 并发送给新 C++ 节点
+			snapshotJSON, err := json.Marshal(snapshot)
+			if err != nil {
+				log.Printf("[Failover] 房间 %s 序列化快照失败: %v", r.ID, err)
+				skipped++
+				continue
+			}
+			log.Printf("[Failover] 房间 %s 即将向新节点 %d 发送 CreateRoom, snapshotSize=%d", r.ID, newNode.PodIndex, len(snapshotJSON))
+
+			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			resp, err := rpc.CallCreateRoom(ctx, newNode.GetClient(), r.ID, string(snapshotJSON))
+			cancel()
+			if err != nil {
+				log.Printf("[Failover] 房间 %s 向新节点 %d 重新创建失败: %v", r.ID, newNode.PodIndex, err)
+				skipped++
+				continue
+			}
+
+			if resp.Code != 0 {
+				log.Printf("[Failover] 房间 %s 在新节点 %d 创建失败 (Code: %d, Message: %s)", r.ID, newNode.PodIndex, resp.Code, resp.Message)
+				skipped++
+				continue
+			}
+
+			r.mu.Lock()
+			r.NodeID = newNode.PodIndex
+			r.mu.Unlock()
+
+			// 同步更新 Redis 中的 snapshot，使 NodeID 与内存中的值保持一致
+			ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+			updatedSnapshot := store.RoomSnapshot{
+				RoomID:          r.ID,
+				Status:          int(roomStatus),
+				NodeID:          newNode.PodIndex,
+				ServerID:        newNode.ServerID,
+				Players:         snapshot.Players,
+				ReadyPlayers:    snapshot.ReadyPlayers,
+				SelectedPokemon: snapshot.SelectedPokemon,
+				UpdatedAt:       time.Now().Unix(),
+			}
+			if saveErr := rm.Store.SaveRoomSnapshot(ctx, updatedSnapshot); saveErr != nil {
+				log.Printf("[Failover] 房间 %s 更新 Redis 快照失败: %v", r.ID, saveErr)
+			}
+			cancel()
+
+			log.Printf("[Failover] ✅ 房间 %s (RoomPlaying) 成功重分配: %d -> %d (已向新 C++ 节点重新创建)", r.ID, oldNodeID, newNode.PodIndex)
+			moved++
+		} else {
+			// 对于等待中的房间，只需更新内存中的 NodeID，无需通知 C++
+			log.Printf("[Failover] 房间 %s (RoomWaiting/RoomFinshed) 无需重新分配房间", r.ID)
+			moved++
+		}
+	}
+
+	return moved, skipped
 }
 
-// 删除房间快照，调用DeleteRoomSnapshot
-func (rm *RoomManager) deleteRoomSnapshot(roomID string) {
-	if rm.Store == nil || roomID == "" {
-		return
+// 从可用节点中为房间选择一个健康的节点，排除掉指定的 Pod 索引（通常是不可用的节点），如果没有可用节点则返回错误
+func (rm *RoomManager) pickHealthyNodeForRoom(roomID string, excludePodIndex int) (*engine.EngineNode, error) {
+	if rm.EngineConn == nil {
+		return nil, fmt.Errorf("engine connection is nil")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := rm.Store.DeleteRoomSnapshot(ctx, roomID); err != nil {
-		log.Printf("[Redis] 删除房间快照失败 room=%s err=%v", roomID, err)
+	// 建立一个健康节点白名单，排除掉不可用的节点和指定的排除节点
+	status := rm.EngineConn.GetStatus()
+	healthyIndices := make([]int, 0, len(status.Nodes))
+	for _, node := range status.Nodes {
+		if !node.Healthy || node.PodIndex == excludePodIndex { // 排除不可用节点和指定的排除节点
+			continue
+		}
+		healthyIndices = append(healthyIndices, node.PodIndex)
 	}
+
+	if len(healthyIndices) == 0 {
+		return nil, fmt.Errorf("no healthy nodes available")
+	}
+
+	// 对健康节点进行排序，确保一致性哈希算法的稳定性，减少同一房间频繁迁移的情况
+	sort.Ints(healthyIndices)
+	// 使用一致性哈希算法在健康节点中选择一个节点，确保同一房间尽可能分配到同一节点上，减少跨节点迁移的情况
+	chosen := healthyIndices[int(crc32.ChecksumIEEE([]byte(roomID)))%len(healthyIndices)]
+	return rm.EngineConn.GetNodeByPodIndex(chosen)
 }

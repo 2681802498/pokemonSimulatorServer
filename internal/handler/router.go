@@ -1,21 +1,55 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"go-server/internal/engine"
 	"go-server/internal/protocol"
 	"go-server/internal/room"
+	"go-server/internal/store"
 	"log"
 	"log/slog"
 	"strconv"
 	"time"
 )
 
-func InitGameRouters(router *Router, rm *room.RoomManager, ep *engine.EnginePool) {
+func InitGameRouters(router *Router, rm *room.RoomManager, engineConn *engine.EngineInstance) {
 
 	router.Register("cluster_status", func(s *room.Session, req *protocol.GameRequest, l *slog.Logger) {
 		l.Info("处理 cluster_status 指令")
-		ep.StatusResponse(s)
+		s.SendResponse("cluster_status_res", protocol.CodeSuccess, "获取集群状态成功", engineConn.GetStatus())
+	})
+
+	router.Register("get_redis", func(s *room.Session, req *protocol.GameRequest, l *slog.Logger) {
+		l.Info("处理 get_redis 指令")
+		if rm == nil || rm.Store == nil {
+			s.SendResponse("get_redis_res", protocol.CodeServerErr, "Redis 未初始化", nil)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		// 使用 InspectAllRooms 获取额外的 TTL / 持久化信息，便于排查僵尸房等
+		debugInfos, err := rm.Store.InspectAllRooms(ctx)
+		if err != nil {
+			l.Error("获取 Redis 调试数据失败", "error", err)
+			s.SendResponse("get_redis_res", protocol.CodeServerErr, "无法读取快照", nil)
+			return
+		}
+		if debugInfos == nil {
+			debugInfos = []store.DebugRoomInfo{}
+		}
+
+		resp := map[string]interface{}{
+			"type":          "get_redis_res",
+			"count":         len(debugInfos),
+			"timestamp":     time.Now().Unix(),
+			"rooms":         debugInfos,
+			"engine_status": engineConn.GetStatus(),
+		}
+		s.SendResponse("get_redis_res", protocol.CodeSuccess, "获取 Redis 数据成功", resp)
+
 	})
 
 	router.Register("create_room", func(s *room.Session, req *protocol.GameRequest, l *slog.Logger) {

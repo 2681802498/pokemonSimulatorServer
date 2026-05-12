@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"fmt"
 	"hash/crc32"
 	"sort"
@@ -8,12 +9,44 @@ import (
 	"sync"
 
 	"go-server/api/calc"
+
+	"google.golang.org/grpc"
 )
+
+// EngineClient 抽象了房间服务可调用的 C++ gRPC 能力。
+// calc.NewCalculatorClient 自动满足该接口。
+type EngineClient interface {
+	CreateRoom(ctx context.Context, in *calc.CreateRoomRequest, opts ...grpc.CallOption) (*calc.CommonResponse, error)
+	SendCommand(ctx context.Context, in *calc.GameCommand, opts ...grpc.CallOption) (*calc.CommonResponse, error)
+	DestroyRoom(ctx context.Context, in *calc.DestroyRoomRequest, opts ...grpc.CallOption) (*calc.DestroyRoomResponse, error)
+	GetHeartbeat(ctx context.Context, in *calc.HeartbeatRequest, opts ...grpc.CallOption) (*calc.HeartbeatResponse, error)
+}
+
+// NewEngineClient 从连接创建统一的引擎客户端。
+func NewEngineClient(cc grpc.ClientConnInterface) EngineClient {
+	return calc.NewCalculatorClient(cc)
+}
+
+// RPCResponse 是对通用响应的轻量封装，避免上层业务直接依赖生成代码类型。
+type RPCResponse struct {
+	Code    int32
+	Message string
+}
+
+// HeartbeatStatus 是对心跳响应的轻量封装。
+type HeartbeatStatus struct {
+	Code        int32
+	ActiveRooms int32
+	CPUUsage    float32
+	MemoryUsed  uint64
+	MaxCapacity int32
+	ServerID    string // C++ 实例运行的唯一 ID
+}
 
 type CppNode struct {
 	ID     int
 	Addr   string
-	Client calc.CalculatorClient
+	Client EngineClient
 }
 
 type HashRing struct {
@@ -33,7 +66,7 @@ var Mgr = &NodeManager{
 	Nodes:   make(map[int]*CppNode),
 	RingMap: make(map[uint32]int)}
 
-func (m *NodeManager) RegisterNode(id int, addr string, client calc.CalculatorClient) {
+func (m *NodeManager) RegisterNode(id int, addr string, client EngineClient) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -106,4 +139,47 @@ func (m *NodeManager) GetNodeByID(id int) (*CppNode, bool) {
 
 	node, exists := m.Nodes[id]
 	return node, exists
+}
+
+// CallCreateRoom 将创建房间请求统一封装在 rpc 层。
+func CallCreateRoom(ctx context.Context, client EngineClient, roomID, initJSON string) (*RPCResponse, error) {
+	resp, err := client.CreateRoom(ctx, &calc.CreateRoomRequest{RoomId: roomID, InitJson: initJSON})
+	if err != nil {
+		return nil, err
+	}
+	return &RPCResponse{Code: resp.Code, Message: resp.Message}, nil
+}
+
+// CallSendCommand 将对战指令统一封装在 rpc 层。
+func CallSendCommand(ctx context.Context, client EngineClient, roomID, playerID, action string) (*RPCResponse, error) {
+	resp, err := client.SendCommand(ctx, &calc.GameCommand{RoomId: roomID, PlayerId: playerID, Action: action})
+	if err != nil {
+		return nil, err
+	}
+	return &RPCResponse{Code: resp.Code, Message: resp.Message}, nil
+}
+
+// CallDestroyRoom 将销毁房间请求统一封装在 rpc 层。
+func CallDestroyRoom(ctx context.Context, client EngineClient, roomID string) (*RPCResponse, error) {
+	resp, err := client.DestroyRoom(ctx, &calc.DestroyRoomRequest{RoomId: roomID})
+	if err != nil {
+		return nil, err
+	}
+	return &RPCResponse{Code: resp.Code, Message: resp.Message}, nil
+}
+
+// CallGetHeartbeat 将心跳请求统一封装在 rpc 层。
+func CallGetHeartbeat(ctx context.Context, client EngineClient) (*HeartbeatStatus, error) {
+	resp, err := client.GetHeartbeat(ctx, &calc.HeartbeatRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return &HeartbeatStatus{
+		Code:        resp.Code,
+		ActiveRooms: resp.ActiveRooms,
+		CPUUsage:    resp.CpuUsage,
+		MemoryUsed:  resp.MemoryUsed,
+		MaxCapacity: resp.MaxCapacity,
+		ServerID:    resp.ServerId,
+	}, nil
 }

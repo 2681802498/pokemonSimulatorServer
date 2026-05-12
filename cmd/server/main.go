@@ -55,30 +55,35 @@ func initRedis() *store.RedisStore {
 	return redisStore
 }
 
-func initEnginePool() *engine.EnginePool {
-	return engine.NewEnginePool()
+func initEngineConn() *engine.EngineInstance {
+	return engine.NewEngineInstance()
 }
 
-func initGameRouter(rm *room.RoomManager, pool *engine.EnginePool) *handler.Router {
+func initGameRouter(rm *room.RoomManager, engineConn *engine.EngineInstance) *handler.Router {
 	gameRouter := handler.NewRouter()
-	handler.InitGameRouters(gameRouter, rm, pool)
+	handler.InitGameRouters(gameRouter, rm, engineConn)
 	return gameRouter
 }
 
-func initRoomManager(redisStore *store.RedisStore) *room.RoomManager {
-	rm := room.NewRoomManager(redisStore)
+func initRoomManager(redisStore *store.RedisStore, engineConn *engine.EngineInstance) *room.RoomManager {
+	rm := room.NewRoomManager(redisStore, engineConn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rm.RestoreFromStore(ctx, 0); err != nil {
+		slog.Error("Redis 房间恢复失败", "error", err)
+	}
 	rm.StartMatchWorker()
 	return rm
 }
 
-func initHTTPServer(gameRouter *handler.Router, rm *room.RoomManager, pool *engine.EnginePool, redisStore *store.RedisStore) *http.Server {
+func initHTTPServer(gameRouter *handler.Router, rm *room.RoomManager, engineConn *engine.EngineInstance, redisStore *store.RedisStore) *http.Server {
 	server := &http.Server{Addr: ":8080", Handler: nil}
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		handler.HandleWS(w, r, gameRouter, rm)
 	})
-	http.HandleFunc("/debug/pool", func(w http.ResponseWriter, r *http.Request) {
-		status := pool.GetStatus()
+	http.HandleFunc("/debug/engine", func(w http.ResponseWriter, r *http.Request) {
+		status := engineConn.GetStatus()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(status)
 	})
@@ -114,9 +119,9 @@ func initHTTPServer(gameRouter *handler.Router, rm *room.RoomManager, pool *engi
 	return server
 }
 
-func startHTTPServer(server *http.Server, pool *engine.EnginePool) {
+func startHTTPServer(server *http.Server, engineConn *engine.EngineInstance) {
 	go func() {
-		slog.Info("游戏后端已启动", "port", 8080, "cpp_instances", len(pool.Instances))
+		slog.Info("游戏后端已启动", "port", 8080, "cpp_instances", engineConn.GetStatus().Total)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("服务异常退出", "error", err)
 		}
@@ -132,18 +137,25 @@ func main() {
 		}
 	}()
 
-	pool := initEnginePool()
+	engineConn := initEngineConn()
 
-	rm := initRoomManager(redisStore)
+	rm := initRoomManager(redisStore, engineConn)
 
-	gameRouter := initGameRouter(rm, pool)
+	// 注册房间重新分配回调
+	engineConn.SetReassignRoomsFunc(func() {
+		if moved, skipped := rm.ReassignRunningRoomsFromUnavailableNodes(); moved > 0 || skipped > 0 {
+			slog.Info("房间重新分配完成", "moved", moved, "skipped", skipped)
+		}
+	})
+
+	gameRouter := initGameRouter(rm, engineConn)
 
 	// 1. 准备信号监听
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	server := initHTTPServer(gameRouter, rm, pool, redisStore)
-	startHTTPServer(server, pool)
+	server := initHTTPServer(gameRouter, rm, engineConn, redisStore)
+	startHTTPServer(server, engineConn)
 
 	// 3. 阻塞在这里，等待信号
 	// 程序运行到这里会“停住”，直到你按 Ctrl+C
@@ -161,7 +173,7 @@ func main() {
 	}
 
 	// 调用你 engine 里的逻辑，关闭所有 C++ 进程
-	pool.Shutdown()
+	engineConn.Shutdown()
 
 	slog.Info("服务已完全退出")
 }

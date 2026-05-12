@@ -19,10 +19,17 @@ type RoomSnapshot struct {
 	RoomID          string                              `json:"room_id"`
 	Status          int                                 `json:"status"`
 	NodeID          int                                 `json:"node_id"`
+	ServerID        string                              `json:"server_id,omitempty"`
 	Players         []string                            `json:"players"`
 	ReadyPlayers    map[string]bool                     `json:"ready_players"`
 	SelectedPokemon map[string][]map[string]interface{} `json:"selected_pokemon"`
 	UpdatedAt       int64                               `json:"updated_at"`
+}
+
+type DebugRoomInfo struct {
+	Snapshot     RoomSnapshot `json:"snapshot"`
+	RemainingTTL float64      `json:"remaining_ttl_sec"` // 剩余过期时间（秒）
+	IsPersistent bool         `json:"is_persistent"`     // 是否永久存在（这是僵尸房的典型特征）
 }
 
 var ErrNotFound = errors.New("not found")
@@ -105,7 +112,7 @@ func (s *RedisStore) LoadRoomSnapshot(ctx context.Context, roomID string) (*Room
 	return &snapshot, nil
 }
 
-// ListRoomSnapshots使用SCAN命令遍历所有以"room:"开头的键，加载并返回所有房间快照的列表
+// ListRoomSnapshots使用SCAN命令遍历所有以"pokemon:room:"开头的键，加载并返回所有房间快照的列表
 func (s *RedisStore) ListRoomSnapshots(ctx context.Context) ([]RoomSnapshot, error) {
 	const scanCount int64 = 100
 
@@ -115,7 +122,7 @@ func (s *RedisStore) ListRoomSnapshots(ctx context.Context) ([]RoomSnapshot, err
 	)
 
 	for {
-		keys, nextCursor, err := s.client.Scan(ctx, cursor, "room:*", scanCount).Result()
+		keys, nextCursor, err := s.client.Scan(ctx, cursor, "pokemon:room:*", scanCount).Result()
 		if err != nil {
 			return nil, fmt.Errorf("scan room snapshots failed: %w", err)
 		}
@@ -210,9 +217,48 @@ func (s *RedisStore) DeleteSessionBinding(ctx context.Context, userID string) er
 	return nil
 }
 
+// InspectAllRooms用于调试目的，扫描所有房间快照并返回包含快照内容、剩余TTL和是否永久存在的列表，帮助识别僵尸房等异常情况
+func (s *RedisStore) InspectAllRooms(ctx context.Context) ([]DebugRoomInfo, error) {
+	var debugInfos []DebugRoomInfo
+	cursor := uint64(0)
+
+	for {
+		keys, nextCursor, err := s.client.Scan(ctx, cursor, "pokemon:room:*", 100).Result()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, key := range keys {
+			// 1. 获取剩余 TTL
+			ttl, _ := s.client.TTL(ctx, key).Result()
+
+			// 2. 获取房间数据
+			raw, err := s.client.Get(ctx, key).Result()
+			if err != nil {
+				continue
+			}
+
+			var snap RoomSnapshot
+			_ = json.Unmarshal([]byte(raw), &snap)
+
+			debugInfos = append(debugInfos, DebugRoomInfo{
+				Snapshot:     snap,
+				RemainingTTL: ttl.Seconds(),
+				IsPersistent: ttl == -1, // -1 代表没有设置过期时间
+			})
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return debugInfos, nil
+}
+
 // roomKey和sessionKey是Redis键的生成函数，分别用于生成房间快照和会话绑定的键，确保键的命名规范和唯一性
 func (s *RedisStore) roomKey(roomID string) string {
-	return "room:" + roomID
+	return "pokemon:room:" + roomID
 }
 
 // sessionKey生成会话绑定的Redis键，格式为"session:{userID}"，用于存储用户ID和房间ID的绑定关系

@@ -48,4 +48,5 @@ message HeartbeatResponse {
     float cpu_usage = 3;       // 节点的 CPU 占用率
     uint64 memory_used = 4;    // 已用内存 (MB)
     int32 max_capacity = 5;    // 节点最大承载量 (建议值)
+    string server_id = 6;      // C++ 实例唯一 ID（用于检测重启）
 }

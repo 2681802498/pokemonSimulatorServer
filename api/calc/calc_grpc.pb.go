@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v7.34.1
-// source: calc.proto
+// source: api/proto/calc.proto
 
 package calc
 
@@ -239,5 +239,5 @@ var Calculator_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "calc.proto",
+	Metadata: "api/proto/calc.proto",
 }

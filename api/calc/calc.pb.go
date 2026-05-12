@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.34.1
-// source: calc.proto
+// source: api/proto/calc.proto
 
 package calc
 
@@ -31,7 +31,7 @@ type CreateRoomRequest struct {
 
 func (x *CreateRoomRequest) Reset() {
 	*x = CreateRoomRequest{}
-	mi := &file_calc_proto_msgTypes[0]
+	mi := &file_api_proto_calc_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +43,7 @@ func (x *CreateRoomRequest) String() string {
 func (*CreateRoomRequest) ProtoMessage() {}
 
 func (x *CreateRoomRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_calc_proto_msgTypes[0]
+	mi := &file_api_proto_calc_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +56,7 @@ func (x *CreateRoomRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRoomRequest.ProtoReflect.Descriptor instead.
 func (*CreateRoomRequest) Descriptor() ([]byte, []int) {
-	return file_calc_proto_rawDescGZIP(), []int{0}
+	return file_api_proto_calc_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *CreateRoomRequest) GetRoomId() string {
@@ -84,7 +84,7 @@ type GameCommand struct {
 
 func (x *GameCommand) Reset() {
 	*x = GameCommand{}
-	mi := &file_calc_proto_msgTypes[1]
+	mi := &file_api_proto_calc_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -96,7 +96,7 @@ func (x *GameCommand) String() string {
 func (*GameCommand) ProtoMessage() {}
 
 func (x *GameCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_calc_proto_msgTypes[1]
+	mi := &file_api_proto_calc_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -109,7 +109,7 @@ func (x *GameCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GameCommand.ProtoReflect.Descriptor instead.
 func (*GameCommand) Descriptor() ([]byte, []int) {
-	return file_calc_proto_rawDescGZIP(), []int{1}
+	return file_api_proto_calc_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *GameCommand) GetRoomId() string {
@@ -143,7 +143,7 @@ type CommonResponse struct {
 
 func (x *CommonResponse) Reset() {
 	*x = CommonResponse{}
-	mi := &file_calc_proto_msgTypes[2]
+	mi := &file_api_proto_calc_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -155,7 +155,7 @@ func (x *CommonResponse) String() string {
 func (*CommonResponse) ProtoMessage() {}
 
 func (x *CommonResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_calc_proto_msgTypes[2]
+	mi := &file_api_proto_calc_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -168,7 +168,7 @@ func (x *CommonResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommonResponse.ProtoReflect.Descriptor instead.
 func (*CommonResponse) Descriptor() ([]byte, []int) {
-	return file_calc_proto_rawDescGZIP(), []int{2}
+	return file_api_proto_calc_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *CommonResponse) GetCode() int32 {
@@ -194,7 +194,7 @@ type DestroyRoomRequest struct {
 
 func (x *DestroyRoomRequest) Reset() {
 	*x = DestroyRoomRequest{}
-	mi := &file_calc_proto_msgTypes[3]
+	mi := &file_api_proto_calc_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -206,7 +206,7 @@ func (x *DestroyRoomRequest) String() string {
 func (*DestroyRoomRequest) ProtoMessage() {}
 
 func (x *DestroyRoomRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_calc_proto_msgTypes[3]
+	mi := &file_api_proto_calc_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -219,7 +219,7 @@ func (x *DestroyRoomRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DestroyRoomRequest.ProtoReflect.Descriptor instead.
 func (*DestroyRoomRequest) Descriptor() ([]byte, []int) {
-	return file_calc_proto_rawDescGZIP(), []int{3}
+	return file_api_proto_calc_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DestroyRoomRequest) GetRoomId() string {
@@ -239,7 +239,7 @@ type DestroyRoomResponse struct {
 
 func (x *DestroyRoomResponse) Reset() {
 	*x = DestroyRoomResponse{}
-	mi := &file_calc_proto_msgTypes[4]
+	mi := &file_api_proto_calc_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -251,7 +251,7 @@ func (x *DestroyRoomResponse) String() string {
 func (*DestroyRoomResponse) ProtoMessage() {}
 
 func (x *DestroyRoomResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_calc_proto_msgTypes[4]
+	mi := &file_api_proto_calc_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -264,7 +264,7 @@ func (x *DestroyRoomResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DestroyRoomResponse.ProtoReflect.Descriptor instead.
 func (*DestroyRoomResponse) Descriptor() ([]byte, []int) {
-	return file_calc_proto_rawDescGZIP(), []int{4}
+	return file_api_proto_calc_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *DestroyRoomResponse) GetCode() int32 {
@@ -289,7 +289,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_calc_proto_msgTypes[5]
+	mi := &file_api_proto_calc_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -301,7 +301,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_calc_proto_msgTypes[5]
+	mi := &file_api_proto_calc_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -314,7 +314,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_calc_proto_rawDescGZIP(), []int{5}
+	return file_api_proto_calc_proto_rawDescGZIP(), []int{5}
 }
 
 type HeartbeatResponse struct {
@@ -324,13 +324,14 @@ type HeartbeatResponse struct {
 	CpuUsage      float32                `protobuf:"fixed32,3,opt,name=cpu_usage,json=cpuUsage,proto3" json:"cpu_usage,omitempty"`         // 节点的 CPU 占用率
 	MemoryUsed    uint64                 `protobuf:"varint,4,opt,name=memory_used,json=memoryUsed,proto3" json:"memory_used,omitempty"`    // 已用内存 (MB)
 	MaxCapacity   int32                  `protobuf:"varint,5,opt,name=max_capacity,json=maxCapacity,proto3" json:"max_capacity,omitempty"` // 节点最大承载量 (建议值)
+	ServerId      string                 `protobuf:"bytes,6,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`           // C++ 实例唯一 ID（用于检测重启）
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_calc_proto_msgTypes[6]
+	mi := &file_api_proto_calc_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -342,7 +343,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_calc_proto_msgTypes[6]
+	mi := &file_api_proto_calc_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -355,7 +356,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_calc_proto_rawDescGZIP(), []int{6}
+	return file_api_proto_calc_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *HeartbeatResponse) GetCode() int32 {
@@ -393,12 +394,18 @@ func (x *HeartbeatResponse) GetMaxCapacity() int32 {
 	return 0
 }
 
-var File_calc_proto protoreflect.FileDescriptor
+func (x *HeartbeatResponse) GetServerId() string {
+	if x != nil {
+		return x.ServerId
+	}
+	return ""
+}
 
-const file_calc_proto_rawDesc = "" +
+var File_api_proto_calc_proto protoreflect.FileDescriptor
+
+const file_api_proto_calc_proto_rawDesc = "" +
 	"\n" +
-	"\n" +
-	"calc.proto\x12\x04calc\"I\n" +
+	"\x14api/proto/calc.proto\x12\x04calc\"I\n" +
 	"\x11CreateRoomRequest\x12\x17\n" +
 	"\aroom_id\x18\x01 \x01(\tR\x06roomId\x12\x1b\n" +
 	"\tinit_json\x18\x02 \x01(\tR\binitJson\"[\n" +
@@ -414,14 +421,15 @@ const file_calc_proto_rawDesc = "" +
 	"\x13DestroyRoomResponse\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"\x12\n" +
-	"\x10HeartbeatRequest\"\xab\x01\n" +
+	"\x10HeartbeatRequest\"\xc8\x01\n" +
 	"\x11HeartbeatResponse\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12!\n" +
 	"\factive_rooms\x18\x02 \x01(\x05R\vactiveRooms\x12\x1b\n" +
 	"\tcpu_usage\x18\x03 \x01(\x02R\bcpuUsage\x12\x1f\n" +
 	"\vmemory_used\x18\x04 \x01(\x04R\n" +
 	"memoryUsed\x12!\n" +
-	"\fmax_capacity\x18\x05 \x01(\x05R\vmaxCapacity2\x8a\x02\n" +
+	"\fmax_capacity\x18\x05 \x01(\x05R\vmaxCapacity\x12\x1b\n" +
+	"\tserver_id\x18\x06 \x01(\tR\bserverId2\x8a\x02\n" +
 	"\n" +
 	"Calculator\x12=\n" +
 	"\n" +
@@ -432,19 +440,19 @@ const file_calc_proto_rawDesc = "" +
 	"./api/calcb\x06proto3"
 
 var (
-	file_calc_proto_rawDescOnce sync.Once
-	file_calc_proto_rawDescData []byte
+	file_api_proto_calc_proto_rawDescOnce sync.Once
+	file_api_proto_calc_proto_rawDescData []byte
 )
 
-func file_calc_proto_rawDescGZIP() []byte {
-	file_calc_proto_rawDescOnce.Do(func() {
-		file_calc_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_calc_proto_rawDesc), len(file_calc_proto_rawDesc)))
+func file_api_proto_calc_proto_rawDescGZIP() []byte {
+	file_api_proto_calc_proto_rawDescOnce.Do(func() {
+		file_api_proto_calc_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_api_proto_calc_proto_rawDesc), len(file_api_proto_calc_proto_rawDesc)))
 	})
-	return file_calc_proto_rawDescData
+	return file_api_proto_calc_proto_rawDescData
 }
 
-var file_calc_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
-var file_calc_proto_goTypes = []any{
+var file_api_proto_calc_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_api_proto_calc_proto_goTypes = []any{
 	(*CreateRoomRequest)(nil),   // 0: calc.CreateRoomRequest
 	(*GameCommand)(nil),         // 1: calc.GameCommand
 	(*CommonResponse)(nil),      // 2: calc.CommonResponse
@@ -453,7 +461,7 @@ var file_calc_proto_goTypes = []any{
 	(*HeartbeatRequest)(nil),    // 5: calc.HeartbeatRequest
 	(*HeartbeatResponse)(nil),   // 6: calc.HeartbeatResponse
 }
-var file_calc_proto_depIdxs = []int32{
+var file_api_proto_calc_proto_depIdxs = []int32{
 	0, // 0: calc.Calculator.CreateRoom:input_type -> calc.CreateRoomRequest
 	1, // 1: calc.Calculator.SendCommand:input_type -> calc.GameCommand
 	3, // 2: calc.Calculator.DestroyRoom:input_type -> calc.DestroyRoomRequest
@@ -469,26 +477,26 @@ var file_calc_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_calc_proto_init() }
-func file_calc_proto_init() {
-	if File_calc_proto != nil {
+func init() { file_api_proto_calc_proto_init() }
+func file_api_proto_calc_proto_init() {
+	if File_api_proto_calc_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_calc_proto_rawDesc), len(file_calc_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_calc_proto_rawDesc), len(file_api_proto_calc_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_calc_proto_goTypes,
-		DependencyIndexes: file_calc_proto_depIdxs,
-		MessageInfos:      file_calc_proto_msgTypes,
+		GoTypes:           file_api_proto_calc_proto_goTypes,
+		DependencyIndexes: file_api_proto_calc_proto_depIdxs,
+		MessageInfos:      file_api_proto_calc_proto_msgTypes,
 	}.Build()
-	File_calc_proto = out.File
-	file_calc_proto_goTypes = nil
-	file_calc_proto_depIdxs = nil
+	File_api_proto_calc_proto = out.File
+	file_api_proto_calc_proto_goTypes = nil
+	file_api_proto_calc_proto_depIdxs = nil
 }

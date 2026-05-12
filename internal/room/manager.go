@@ -2,6 +2,8 @@ package room
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"go-server/configs"
@@ -12,7 +14,6 @@ import (
 	"go-server/internal/store"
 	"hash/crc32"
 	"log"
-	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -278,9 +279,14 @@ func (rm *RoomManager) GetRooms() []RoomInfo {
 	return roomList
 }
 
-// 生成房间ID，6位数字字符串，理论上支持100万房间，实际使用中会有重复概率，但可以接受，之后会再新建房间时候进行检查
+// 生成房间ID：使用加密随机数，避免多 Pod 使用相同 math/rand 序列导致房号重复。
 func generateRoomID() string {
-	return fmt.Sprintf("%06d", rand.Intn(1000000))
+	buf := make([]byte, 8)
+	if _, err := crand.Read(buf); err != nil {
+		// 极端情况下退回到时间戳，避免创建失败
+		return fmt.Sprintf("room-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 // 查找玩家会话

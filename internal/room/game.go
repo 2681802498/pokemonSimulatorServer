@@ -26,7 +26,6 @@ func (r *GameRoom) StartGame(s *Session) {
 	}
 
 	r.Status = RoomPlaying
-	targetNodeID := r.NodeID
 	r.mu.Unlock()
 
 	if len(sessions) < 2 {
@@ -44,14 +43,17 @@ func (r *GameRoom) StartGame(s *Session) {
 		r.handleStartError(r.ID, fmt.Sprintf("分配 C++ 引擎节点失败: %v", err))
 		return
 	}
+	r.mu.Lock()
 	r.NodeID = node.PodIndex
+	targetNodeID := r.NodeID
+	r.mu.Unlock()
 
 	log.Printf("[Room] 房间 %s 准备同步至 C++ 节点 [%d]...", r.ID, targetNodeID)
 
 	go func() {
 		// 尝试使用目标节点，失败则故障转移
 		node, err := r.EngineConn.GetNodeByPodIndex(targetNodeID)
-		if err != nil || r.NodeID == 0 {
+		if err != nil {
 			log.Printf("[Room] 房间 %s 的目标节点 [%d] 不可用，尝试故障转移: %v", r.ID, targetNodeID, err)
 			// 故障转移：重新使用一致性哈希分配节点
 			node, err = r.EngineConn.GetNodeForRoom(r.ID)

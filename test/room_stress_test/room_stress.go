@@ -21,10 +21,10 @@ const (
 	maxActionPause    = 900 * time.Millisecond
 	minStartGameDelay = 1 * time.Second // 同一组内：建房完成后到开局的等待
 	maxStartGameDelay = 3 * time.Second
-	minGroupInterval  = 2 * time.Second // 组间等待（不短）
-	maxGroupInterval  = 5 * time.Second
-	minCreateLeadWait = 2 * time.Second // 开始创建下一组房间前的随机等待
-	maxCreateLeadWait = 4 * time.Second
+	minGroupInterval  = 1 * time.Second // 组间等待（不短）
+	maxGroupInterval  = 4 * time.Second
+	minCreateLeadWait = 1 * time.Second // 开始创建下一组房间前的随机等待
+	maxCreateLeadWait = 3 * time.Second
 	minRoundDuration  = 65 * time.Second
 	connectTimeout    = 5 * time.Second
 	maxInboxBuffer    = 512

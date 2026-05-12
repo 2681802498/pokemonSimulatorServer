@@ -192,8 +192,13 @@ func (e *EngineInstance) pickPreferredNodeForRoom(roomID string) (*EngineNode, b
 			continue
 		}
 
-		// 跳过已满容量节点（capacity=0 视为未上报容量限制，不按“满”处理）。
-		if status.MaxCapacity > 0 && status.ActiveRooms >= status.MaxCapacity {
+		// 处理 MaxCapacity 未上报 (<=0) 的情况：使用 configs.CppMaxInstance 作为回退容量。
+		effectiveMax := status.MaxCapacity
+		if effectiveMax <= 0 {
+			effectiveMax = int32(configs.CppMaxInstance)
+		}
+		// 若节点已达到或超过容量阈值，则视为已满并跳过
+		if effectiveMax > 0 && status.ActiveRooms >= effectiveMax {
 			continue
 		}
 
@@ -263,6 +268,13 @@ func (e *EngineInstance) GetStatus() EngineStatus {
 			continue
 		}
 		s := node.snapshot()
+		// 只统计仍可能影响业务的节点：
+		// 1) 健康节点；
+		// 2) 或者仍持有房间的非健康节点。
+		// 这样可以避免历史探测到但已不存在、且没有房间的节点长期把 unhealthy 数量撑高。
+		if !s.Healthy && s.ActiveRooms == 0 {
+			continue
+		}
 		if s.Healthy {
 			healthy++
 		}
@@ -325,6 +337,7 @@ func (e *EngineInstance) healthCheckLoop() {
 		case <-ticker.C: // 如果断开了，尝试重连；如果连接了，检查心跳
 			e.ensureConnected()
 			e.checkHeartbeat()
+			e.shrinkReplicaCountIfNeeded()
 			// 检查心跳后，如果有不健康的节点，触发房间重新分配
 			e.checkAndTriggerReassign()
 		case <-podDiscoveryTicker.C: // 服务运行过程中定期探测新 Pod 是否生成
@@ -372,7 +385,7 @@ func (e *EngineInstance) ensureConnected() {
 
 // checkHeartbeat 检查所有 Pod 的心跳，并在失败时尝试重连。
 func (e *EngineInstance) checkHeartbeat() {
-	for i := 0; i < e.replicas; i++ {
+	for _, i := range e.snapshotPodIndices() {
 		node := e.getNode(i)
 		if node == nil {
 			continue
@@ -451,13 +464,46 @@ func (e *EngineInstance) updateMaxPodIndex(podIndex int) {
 
 	if podIndex > e.maxPodIndex {
 		e.maxPodIndex = podIndex
-		// 如果新Pod索引超过当前replicas，更新replicas
-		if podIndex >= e.replicas {
-			oldReplicas := e.replicas
-			e.replicas = podIndex + 1
-			slog.Info("副本数已自动更新", "old_replicas", oldReplicas, "new_replicas", e.replicas)
+	}
+}
+
+// shrinkReplicaCountIfNeeded 在检测到高索引 Pod 已全部失活时，将 replicas 向下回退。
+// 仅依据当前仍健康的节点计算，避免历史探测到的节点长期占用巡检位。
+func (e *EngineInstance) shrinkReplicaCountIfNeeded() {
+	indices := e.snapshotPodIndices()
+	maxHealthyIndex := -1
+
+	for _, idx := range indices {
+		node := e.getNode(idx)
+		if node == nil {
+			continue
+		}
+
+		status := node.snapshot()
+		if status.Healthy && idx > maxHealthyIndex {
+			maxHealthyIndex = idx
 		}
 	}
+
+	if maxHealthyIndex < 0 {
+		return
+	}
+
+	newReplicas := maxHealthyIndex + 1
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if newReplicas >= e.replicas {
+		return
+	}
+
+	oldReplicas := e.replicas
+	e.replicas = newReplicas
+	if e.maxPodIndex >= newReplicas {
+		e.maxPodIndex = newReplicas - 1
+	}
+	slog.Info("副本数已向下回退", "old_replicas", oldReplicas, "new_replicas", e.replicas)
 }
 
 // checkSingleNode 向指定 Pod 发起心跳请求，并刷新其状态信息。

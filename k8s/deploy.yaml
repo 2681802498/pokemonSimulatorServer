@@ -25,8 +25,8 @@ spec:
     spec:
       containers:
       - name: go-server
-        image: why5899/go-server:v1.0.1
-        imagePullPolicy: IfNotPresent
+        image: why5899/go-server:v1.4.2
+        imagePullPolicy: Always
         ports:
         - containerPort: 8080
           name: http
@@ -45,8 +45,10 @@ spec:
             configMapKeyRef:
               name: go-server-config
               key: app_env
-        - name: K8S_ENGINE_SERVICE
-          value: "pokemon-server-service"
+        - name: K8S_ENGINE_STATEFULSET
+          value: "pokemon-server"
+        - name: K8S_ENGINE_HEADLESS_SERVICE
+          value: "pokemon-server-headless"
         - name: K8S_ENGINE_NAMESPACE
           value: "default"
         - name: K8S_ENGINE_PORT

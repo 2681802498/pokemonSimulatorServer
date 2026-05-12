@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ type EngineNode struct {
 	CPUUsage      float32   `json:"cpu_usage"`
 	MemoryUsed    uint64    `json:"memory_used"`
 	MaxCapacity   int32     `json:"max_capacity"`
+	ServerID      string    `json:"server_id,omitempty"` // C++ 实例运行的唯一 ID，用于检测重启
 
 	mu           sync.RWMutex
 	conn         *grpc.ClientConn
@@ -49,17 +51,20 @@ type EngineNodeStatus struct {
 	CPUUsage      float32   `json:"cpu_usage"`
 	MemoryUsed    uint64    `json:"memory_used"`
 	MaxCapacity   int32     `json:"max_capacity"`
+	ServerID      string    `json:"server_id,omitempty"` // C++ 实例运行的唯一 ID，用于检测重启
 }
 
 // EngineStatus 是引擎连接对外暴露的状态快照。
 type EngineStatus struct {
-	Total       int                `json:"total"`
-	Healthy     int                `json:"healthy"`
-	Unhealthy   int                `json:"unhealthy"`
-	Nodes       []EngineNodeStatus `json:"nodes"`
-	Replicas    int                `json:"replicas"`
-	Namespace   string             `json:"namespace"`
-	ServiceName string             `json:"service_name"`
+	Total               int                `json:"total"`
+	Healthy             int                `json:"healthy"`
+	Unhealthy           int                `json:"unhealthy"`
+	Nodes               []EngineNodeStatus `json:"nodes"`
+	Replicas            int                `json:"replicas"`
+	Namespace           string             `json:"namespace"`
+	ServiceName         string             `json:"service_name"`
+	StatefulSetName     string             `json:"stateful_set_name"`
+	HeadlessServiceName string             `json:"headless_service_name"`
 }
 
 // EngineInstance 负责维护 StatefulSet 中多个 C++ Pod 的长连接与健康检查。
@@ -67,46 +72,55 @@ type EngineStatus struct {
 // 说明：
 // 1. 一个长连接对应一个 StatefulSet Pod（pod-0, pod-1, 等）；
 // 2. 房间根据房间 ID 使用一致性哈希选择落地的 Pod；
-// 3. 每个 Pod 有稳定的 DNS 地址：pokemon-server-{index}.{serviceName}.{namespace}.svc.cluster.local；
-// 4. 健康检查确保所有 Pod 连接可用，断线自动重连。
+// 3. 每个 Pod 有稳定的 DNS 地址：<statefulset>-{index>.<headless-service>.<namespace>.svc.cluster.local；
+// 4. 健康检查确保所有 Pod 连接可用，断线自动重连；
+// 5. 定期探测新 Pod 生成，自动发现并建立连接（动态扩容）。
 type EngineInstance struct {
-	mu               sync.RWMutex
-	ctx              context.Context
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
-	healthCheckEvery time.Duration
-	heartbeatTimeout time.Duration
-	dialTimeout      time.Duration
+	mu                sync.RWMutex
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	healthCheckEvery  time.Duration
+	heartbeatTimeout  time.Duration
+	dialTimeout       time.Duration
+	podDiscoveryEvery time.Duration
 
-	replicas    int
-	namespace   string
-	serviceName string
-	nodes       map[int]*EngineNode
+	replicas            int
+	namespace           string
+	statefulSetName     string
+	headlessServiceName string
+	maxPodIndex         int // 跟踪已发现的最大Pod索引
+	nodes               map[int]*EngineNode
+	reassignFunc        func() // 房间重新分配回调
 }
 
 // NewEngineInstance 创建并初始化引擎连接管理器。
 //
-// 流程：读取 StatefulSet 配置 -> 为每个 Pod 建立持久连接 -> 启动健康检查协程。
+// 流程：读取 StatefulSet 配置 -> 为每个 Pod 建立持久连接 -> 启动健康检查协程 -> 启动 Pod 动态发现协程。
 func NewEngineInstance() *EngineInstance {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	replicas := getEnvInt("K8S_ENGINE_REPLICAS", 1)
 	namespace := getEnvString("K8S_ENGINE_NAMESPACE", "default")
-	serviceName := getEnvString("K8S_ENGINE_SERVICE", "pokemon-server")
+	statefulSetName := getEnvString("K8S_ENGINE_STATEFULSET", "pokemon-server")
+	headlessServiceName := getEnvString("K8S_ENGINE_HEADLESS_SERVICE", statefulSetName+"-headless")
 
 	inst := &EngineInstance{
-		ctx:              ctx,
-		cancel:           cancel,
-		healthCheckEvery: configs.CppHealthCheckInterval,
-		heartbeatTimeout: 2 * time.Second,
-		dialTimeout:      5 * time.Second,
-		replicas:         replicas,
-		namespace:        namespace,
-		serviceName:      serviceName,
-		nodes:            make(map[int]*EngineNode),
+		ctx:                 ctx,
+		cancel:              cancel,
+		healthCheckEvery:    configs.CppHealthCheckInterval,
+		heartbeatTimeout:    2 * time.Second,
+		dialTimeout:         5 * time.Second,
+		podDiscoveryEvery:   5 * time.Second, // 每5秒探测一次新Pod
+		replicas:            replicas,
+		namespace:           namespace,
+		statefulSetName:     statefulSetName,
+		headlessServiceName: headlessServiceName,
+		maxPodIndex:         replicas - 1,
+		nodes:               make(map[int]*EngineNode),
 	}
 
-	slog.Info("Engine 初始化配置", "replicas", replicas, "namespace", namespace, "service", serviceName)
+	slog.Info("Engine 初始化配置", "replicas", replicas, "namespace", namespace, "statefulset", statefulSetName, "headless_service", headlessServiceName)
 
 	for i := 0; i < replicas; i++ {
 		addr := inst.buildPodDNSAddr(i)
@@ -123,15 +137,26 @@ func NewEngineInstance() *EngineInstance {
 	return inst
 }
 
+// SetReassignRoomsFunc 注册房间重新分配的回调函数。
+func (e *EngineInstance) SetReassignRoomsFunc(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.reassignFunc = fn
+}
+
 // buildPodDNSAddr 构造 StatefulSet Pod 的 DNS 地址。
 func (e *EngineInstance) buildPodDNSAddr(podIndex int) string {
-	podName := fmt.Sprintf("%s-%d", e.serviceName, podIndex)
+	podName := fmt.Sprintf("%s-%d", e.statefulSetName, podIndex)
 	port := getEnvString("K8S_ENGINE_PORT", strconv.Itoa(configs.CppStartPort))
-	return fmt.Sprintf("%s.%s-headless.%s.svc.cluster.local:%s", podName, e.serviceName, e.namespace, port)
+	return fmt.Sprintf("%s.%s.%s.svc.cluster.local:%s", podName, e.headlessServiceName, e.namespace, port)
 }
 
 // GetNodeForRoom 根据房间 ID 使用一致性哈希返回对应的 EngineNode。
 func (e *EngineInstance) GetNodeForRoom(roomID string) (*EngineNode, error) {
+	if node, ok := e.pickPreferredNodeForRoom(roomID); ok {
+		return node, nil
+	}
+
 	if e.replicas <= 0 {
 		return nil, fmt.Errorf("no replicas configured")
 	}
@@ -145,6 +170,57 @@ func (e *EngineInstance) GetNodeForRoom(roomID string) (*EngineNode, error) {
 	return node, nil
 }
 
+// pickPreferredNodeForRoom 在健康节点中优先选择“未满容量且 CPU<70%”的节点；
+// 若无低负载节点，则退化为“未满容量”的健康节点。
+func (e *EngineInstance) pickPreferredNodeForRoom(roomID string) (*EngineNode, bool) {
+	indices := e.snapshotPodIndices()
+	if len(indices) == 0 {
+		return nil, false
+	}
+
+	underLoadIndices := make([]int, 0, len(indices))
+	notFullIndices := make([]int, 0, len(indices))
+
+	for _, idx := range indices {
+		node := e.getNode(idx)
+		if node == nil {
+			continue
+		}
+
+		status := node.snapshot()
+		if !status.Healthy {
+			continue
+		}
+
+		// 跳过已满容量节点（capacity=0 视为未上报容量限制，不按“满”处理）。
+		if status.MaxCapacity > 0 && status.ActiveRooms >= status.MaxCapacity {
+			continue
+		}
+
+		notFullIndices = append(notFullIndices, idx)
+		if status.CPUUsage < 70.0 {
+			underLoadIndices = append(underLoadIndices, idx)
+		}
+	}
+
+	candidates := underLoadIndices
+	if len(candidates) == 0 {
+		candidates = notFullIndices
+	}
+	if len(candidates) == 0 {
+		return nil, false
+	}
+
+	sort.Ints(candidates)
+	chosen := candidates[int(crc32.ChecksumIEEE([]byte(roomID)))%len(candidates)]
+	node, err := e.GetNodeByPodIndex(chosen)
+	if err != nil {
+		return nil, false
+	}
+
+	return node, true
+}
+
 // GetNodeByPodIndex 根据 Pod 索引返回对应的 EngineNode。
 func (e *EngineInstance) GetNodeByPodIndex(podIndex int) (*EngineNode, error) {
 	node := e.getNode(podIndex)
@@ -156,12 +232,27 @@ func (e *EngineInstance) GetNodeByPodIndex(podIndex int) (*EngineNode, error) {
 
 // hashRoom 使用房间 ID 和副本数进行一致性哈希。
 func (e *EngineInstance) hashRoom(roomID string) int {
+	e.mu.RLock()
+	replicas := e.replicas
+	e.mu.RUnlock()
+
+	if replicas <= 0 {
+		replicas = 1
+	}
+
 	h := crc32.ChecksumIEEE([]byte(roomID))
-	return int(h) % e.replicas
+	return int(h) % replicas
 }
 
 // GetStatus 返回当前引擎连接状态快照。
 func (e *EngineInstance) GetStatus() EngineStatus {
+	e.mu.RLock()
+	replicas := e.replicas
+	namespace := e.namespace
+	statefulSetName := e.statefulSetName
+	headlessServiceName := e.headlessServiceName
+	e.mu.RUnlock()
+
 	indices := e.snapshotPodIndices()
 	statuses := make([]EngineNodeStatus, 0, len(indices))
 	healthy := 0
@@ -179,13 +270,15 @@ func (e *EngineInstance) GetStatus() EngineStatus {
 	}
 
 	return EngineStatus{
-		Total:       len(statuses),
-		Healthy:     healthy,
-		Unhealthy:   len(statuses) - healthy,
-		Nodes:       statuses,
-		Replicas:    e.replicas,
-		Namespace:   e.namespace,
-		ServiceName: e.serviceName,
+		Total:               len(statuses),
+		Healthy:             healthy,
+		Unhealthy:           len(statuses) - healthy,
+		Nodes:               statuses,
+		Replicas:            replicas,
+		Namespace:           namespace,
+		ServiceName:         headlessServiceName,
+		StatefulSetName:     statefulSetName,
+		HeadlessServiceName: headlessServiceName,
 	}
 }
 
@@ -214,20 +307,42 @@ func (e *EngineInstance) Shutdown() {
 	slog.Info("Engine 已关闭")
 }
 
-// healthCheckLoop 按固定周期巡检所有引擎连接的心跳状态。
+// healthCheckLoop 按固定周期巡检所有引擎连接的心跳状态，并定期探测新 Pod。
 func (e *EngineInstance) healthCheckLoop() {
 	defer e.wg.Done()
 
 	ticker := time.NewTicker(e.healthCheckEvery)
 	defer ticker.Stop()
 
+	// 定期探测新 Pod 的时间计数器
+	podDiscoveryTicker := time.NewTicker(e.podDiscoveryEvery)
+	defer podDiscoveryTicker.Stop()
+
 	for {
 		select {
-		case <-e.ctx.Done():
+		case <-e.ctx.Done(): // 如果收到关闭信号，退出循环
 			return
-		case <-ticker.C:
+		case <-ticker.C: // 如果断开了，尝试重连；如果连接了，检查心跳
 			e.ensureConnected()
 			e.checkHeartbeat()
+			// 检查心跳后，如果有不健康的节点，触发房间重新分配
+			e.checkAndTriggerReassign()
+		case <-podDiscoveryTicker.C: // 服务运行过程中定期探测新 Pod 是否生成
+			e.discoverNewPods()
+		}
+	}
+}
+
+// checkAndTriggerReassign 检查是否存在不健康节点，如果有则触发房间重新分配。
+func (e *EngineInstance) checkAndTriggerReassign() {
+	status := e.GetStatus()
+	if status.Unhealthy > 0 {
+		e.mu.RLock()
+		fn := e.reassignFunc
+		e.mu.RUnlock()
+		if fn != nil {
+			slog.Warn("检测到 unhealthy Pod，触发房间重新分配", "unhealthy_count", status.Unhealthy)
+			go fn()
 		}
 	}
 }
@@ -277,6 +392,74 @@ func (e *EngineInstance) checkHeartbeat() {
 	}
 }
 
+// discoverNewPods 定期探测新 Pod 是否生成。若发现新 Pod，则自动建立连接。
+func (e *EngineInstance) discoverNewPods() {
+	maxAttempts := e.getMaxPodIndex() + 10 // 从已知最大索引开始，向后探测最多10个Pod
+
+	for i := 0; i <= maxAttempts; i++ {
+		if node := e.getNode(i); node != nil {
+			// 已存在的节点交给健康检查/重连逻辑处理，避免重复探测。
+			continue
+		}
+
+		addr := e.buildPodDNSAddr(i)
+
+		// 快速尝试连接新Pod，使用较短的超时
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		conn, err := grpc.DialContext(
+			ctx,
+			addr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+		)
+		cancel()
+
+		if err != nil {
+			// 此Pod不存在，继续尝试下一个
+			slog.Debug("新Pod探测失败，跳过", "pod_index", i, "addr", addr)
+			continue
+		}
+
+		// 发现了新的Pod，关闭临时连接，使用正式连接建立流程
+		_ = conn.Close()
+
+		slog.Info("发现新Pod！", "pod_index", i, "addr", addr)
+
+		// 建立正式连接
+		if err := e.connectAndRegisterPod(i, addr); err != nil {
+			slog.Error("新Pod连接失败", "pod_index", i, "addr", addr, "error", err)
+			continue
+		}
+
+		// 更新最大已知Pod索引和副本数
+		e.updateMaxPodIndex(i)
+		slog.Info("新Pod已连接并注册", "pod_index", i, "addr", addr, "new_max_pod_index", i)
+	}
+}
+
+// getMaxPodIndex 获取当前已发现的最大Pod索引。
+func (e *EngineInstance) getMaxPodIndex() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.maxPodIndex
+}
+
+// updateMaxPodIndex 更新最大已发现Pod索引。
+func (e *EngineInstance) updateMaxPodIndex(podIndex int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if podIndex > e.maxPodIndex {
+		e.maxPodIndex = podIndex
+		// 如果新Pod索引超过当前replicas，更新replicas
+		if podIndex >= e.replicas {
+			oldReplicas := e.replicas
+			e.replicas = podIndex + 1
+			slog.Info("副本数已自动更新", "old_replicas", oldReplicas, "new_replicas", e.replicas)
+		}
+	}
+}
+
 // checkSingleNode 向指定 Pod 发起心跳请求，并刷新其状态信息。
 func (e *EngineInstance) checkSingleNode(podIndex int) error {
 	node := e.getNode(podIndex)
@@ -293,13 +476,23 @@ func (e *EngineInstance) checkSingleNode(podIndex int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), e.heartbeatTimeout)
 	defer cancel()
 
+	// RPC 调用获取心跳状态，如果失败则标记节点为不健康
 	hb, err := rpc.CallGetHeartbeat(ctx, client)
 	if err != nil {
 		node.markUnhealthy(err)
 		return err
 	}
 
-	node.markHealthy(hb)
+	// markHealthy 返回 true 表示 ServerID 发生了变化（C++ 实例重启）
+	if serverIDChanged := node.markHealthy(hb); serverIDChanged {
+		slog.Warn("检测到 C++ 实例重启，触发房间重新分配", "pod_index", podIndex, "new_server_id", hb.ServerID)
+		e.mu.RLock()
+		fn := e.reassignFunc
+		e.mu.RUnlock()
+		if fn != nil {
+			go fn()
+		}
+	}
 	return nil
 }
 
@@ -382,7 +575,7 @@ func (e *EngineInstance) connectAndRegisterPod(podIndex int, addr string) error 
 	e.mu.Lock()
 	node, ok := e.nodes[podIndex]
 	if !ok {
-		podName := fmt.Sprintf("%s-%d", e.serviceName, podIndex)
+		podName := fmt.Sprintf("%s-%d", e.statefulSetName, podIndex)
 		node = &EngineNode{PodIndex: podIndex, PodName: podName}
 		e.nodes[podIndex] = node
 	}
@@ -466,9 +659,12 @@ func (n *EngineNode) replaceConnection(addr string, conn *grpc.ClientConn, clien
 	return oldConn
 }
 
-func (n *EngineNode) markHealthy(hb *rpc.HeartbeatStatus) {
+func (n *EngineNode) markHealthy(hb *rpc.HeartbeatStatus) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	// 检查 ServerID 是否发生变化（说明 C++ 实例重启）
+	serverIDChanged := n.ServerID != "" && n.ServerID != hb.ServerID
 
 	n.Healthy = true
 	n.LastError = ""
@@ -477,6 +673,9 @@ func (n *EngineNode) markHealthy(hb *rpc.HeartbeatStatus) {
 	n.CPUUsage = hb.CPUUsage
 	n.MemoryUsed = hb.MemoryUsed
 	n.MaxCapacity = hb.MaxCapacity
+	n.ServerID = hb.ServerID
+
+	return serverIDChanged
 }
 
 func (n *EngineNode) markUnhealthy(reason error) {
@@ -502,6 +701,7 @@ func (n *EngineNode) snapshot() EngineNodeStatus {
 		CPUUsage:      n.CPUUsage,
 		MemoryUsed:    n.MemoryUsed,
 		MaxCapacity:   n.MaxCapacity,
+		ServerID:      n.ServerID,
 	}
 }
 

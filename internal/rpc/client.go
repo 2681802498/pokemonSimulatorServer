@@ -40,6 +40,7 @@ type HeartbeatStatus struct {
 	CPUUsage    float32
 	MemoryUsed  uint64
 	MaxCapacity int32
+	ServerID    string // C++ 实例运行的唯一 ID
 }
 
 type CppNode struct {
@@ -179,5 +180,6 @@ func CallGetHeartbeat(ctx context.Context, client EngineClient) (*HeartbeatStatu
 		CPUUsage:    resp.CpuUsage,
 		MemoryUsed:  resp.MemoryUsed,
 		MaxCapacity: resp.MaxCapacity,
+		ServerID:    resp.ServerId,
 	}, nil
 }

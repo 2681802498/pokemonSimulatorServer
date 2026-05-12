@@ -39,33 +39,60 @@ func (r *GameRoom) StartGame(s *Session) {
 		r.handleStartError(r.ID, fmt.Sprintf("构造 init_json 失败: %v", err))
 		return
 	}
+	node, err := r.EngineConn.GetNodeForRoom(r.ID)
+	if err != nil {
+		r.handleStartError(r.ID, fmt.Sprintf("分配 C++ 引擎节点失败: %v", err))
+		return
+	}
+	r.NodeID = node.PodIndex
 
 	log.Printf("[Room] 房间 %s 准备同步至 C++ 节点 [%d]...", r.ID, targetNodeID)
 
 	go func() {
+		// 尝试使用目标节点，失败则故障转移
 		node, err := r.EngineConn.GetNodeByPodIndex(targetNodeID)
-		if err != nil {
-			r.handleStartError(r.ID, "目标物理节点已离线")
-			return
+		if err != nil || r.NodeID == 0 {
+			log.Printf("[Room] 房间 %s 的目标节点 [%d] 不可用，尝试故障转移: %v", r.ID, targetNodeID, err)
+			// 故障转移：重新使用一致性哈希分配节点
+			node, err = r.EngineConn.GetNodeForRoom(r.ID)
+			if err != nil {
+				r.handleStartError(r.ID, fmt.Sprintf("无可用 C++ 引擎节点: %v", err))
+				return
+			}
+			log.Printf("[Room] 房间 %s 故障转移至新节点成功", r.ID)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-		defer cancel()
+		// RPC 调用，带重试机制（最多3次，总超时15s）
+		var resp *rpc.RPCResponse
+		var rpcErr error
+		maxRetries := 3
 
-		resp, err := rpc.CallCreateRoom(ctx, node.GetClient(), r.ID, initJSON)
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			resp, rpcErr = rpc.CallCreateRoom(ctx, node.GetClient(), r.ID, initJSON)
+			cancel()
 
-		if err != nil {
-			r.handleStartError(r.ID, fmt.Sprintf("C++ 引擎调用失败: %v", err))
-			return
+			if rpcErr == nil && resp != nil && resp.Code == 0 {
+				// 成功
+				log.Printf("[Room] ✅ 房间 %s 已在 C++ 引擎中初始化成功 (第 %d 次尝试)", r.ID, attempt)
+				r.BroadcastToRoom("game_started", protocol.CodeSuccess, "游戏正式开始", nil)
+				return
+			}
+
+			if attempt < maxRetries {
+				log.Printf("[Room] 房间 %s RPC 第 %d 次尝试失败，准备重试...", r.ID, attempt)
+				time.Sleep(time.Second) // 重试前等待1秒
+			}
 		}
 
-		if resp.Code != 0 {
+		// 所有重试都失败
+		if rpcErr != nil {
+			r.handleStartError(r.ID, fmt.Sprintf("C++ 引擎调用失败: %v", rpcErr))
+		} else if resp != nil && resp.Code != 0 {
 			r.handleStartError(r.ID, fmt.Sprintf("C++ 引擎响应失败: code=%d, msg=%s", resp.Code, resp.Message))
-			return
+		} else {
+			r.handleStartError(r.ID, "C++ 引擎调用返回异常")
 		}
-
-		log.Printf("[Room] ✅ 房间 %s 已在 C++ 引擎实例 [%d] 中初始化成功", r.ID, targetNodeID)
-		r.BroadcastToRoom("game_started", protocol.CodeSuccess, "游戏正式开始", nil)
 	}()
 }
 
@@ -151,9 +178,6 @@ func (rm *RoomManager) HandleBattleActionAndPersist(s *Session, rawAction json.R
 	if !exists || r == nil {
 		return
 	}
-
-	rm.persistSessionBinding(s.Player.ID, s.RoomID)
-	rm.persistRoomSnapshot(r)
 }
 
 func (rm *RoomManager) StartGameForSession(s *Session) {
@@ -171,7 +195,6 @@ func (rm *RoomManager) StartGameForSession(s *Session) {
 	}
 
 	r.StartGame(s)
-	rm.persistRoomSnapshot(r)
 }
 
 func (rm *RoomManager) HandleSelectPokemonAndPersist(s *Session, rawData json.RawMessage) {
@@ -189,7 +212,6 @@ func (rm *RoomManager) HandleSelectPokemonAndPersist(s *Session, rawData json.Ra
 	}
 
 	r.HandleSelectPokemon(s, rawData)
-	rm.persistRoomSnapshot(r)
 }
 
 func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {

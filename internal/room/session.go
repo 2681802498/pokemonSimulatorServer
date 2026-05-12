@@ -11,11 +11,11 @@ import (
 )
 
 type Session struct {
-	Player          *model.Player                  // 关联的玩家对象
-	RoomID          string                         // 当前所在的房间ID
-	Conn            *websocket.Conn                // 底层网络连接
-	Send            chan []byte                    // 待发送的消息队列（写缓冲）
-	SelectedPokemon []map[string]interface{}       // 玩家选择的6个宝可梦
+	Player          *model.Player            // 关联的玩家对象
+	RoomID          string                   // 当前所在的房间ID
+	Conn            *websocket.Conn          // 底层网络连接
+	Send            chan []byte              // 待发送的消息队列（写缓冲）
+	SelectedPokemon []map[string]interface{} // 玩家选择的6个宝可梦
 }
 
 // NewSession 创建一个新的会话
@@ -77,6 +77,11 @@ func (s *Session) SendResponse(cmd string, code int, msg string, data interface{
 }
 
 func (r *GameRoom) BroadcastToRoom(cmd string, code int, msg string, data interface{}) {
+	if r == nil {
+		slog.Warn("广播目标房间为空，跳过发送", "cmd", cmd)
+		return
+	}
+
 	resp := protocol.GameResponse{
 		Cmd:  cmd,
 		Code: code,

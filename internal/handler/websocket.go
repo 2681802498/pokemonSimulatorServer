@@ -74,10 +74,10 @@ func HandleWS(w http.ResponseWriter, r *http.Request, router *Router, rm *room.R
 		if s.Conn == currentConn {
 			s.Conn = nil
 			log.Printf("玩家 [%s] 真正离线，进入保留期", s.Player.ID)
-			go func(pID string, rID string) {
+			go func(pID string) {
 				time.Sleep(configs.ReconnectionTimeout)
-				rm.CleanUpIfStillOffline(pID, rID)
-			}(s.Player.ID, s.RoomID)
+				rm.CleanUpIfStillOffline(pID)
+			}(s.Player.ID)
 		} else {
 			log.Printf("玩家 [%s] 链路已由新连接接管，旧协程退出", s.Player.ID)
 		}

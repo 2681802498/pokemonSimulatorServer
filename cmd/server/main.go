@@ -67,6 +67,11 @@ func initGameRouter(rm *room.RoomManager, engineConn *engine.EngineInstance) *ha
 
 func initRoomManager(redisStore *store.RedisStore, engineConn *engine.EngineInstance) *room.RoomManager {
 	rm := room.NewRoomManager(redisStore, engineConn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rm.RestoreFromStore(ctx, 0); err != nil {
+		slog.Error("Redis 房间恢复失败", "error", err)
+	}
 	rm.StartMatchWorker()
 	return rm
 }
@@ -135,6 +140,13 @@ func main() {
 	engineConn := initEngineConn()
 
 	rm := initRoomManager(redisStore, engineConn)
+
+	// 注册房间重新分配回调
+	engineConn.SetReassignRoomsFunc(func() {
+		if moved, skipped := rm.ReassignRunningRoomsFromUnavailableNodes(); moved > 0 || skipped > 0 {
+			slog.Info("房间重新分配完成", "moved", moved, "skipped", skipped)
+		}
+	})
 
 	gameRouter := initGameRouter(rm, engineConn)
 

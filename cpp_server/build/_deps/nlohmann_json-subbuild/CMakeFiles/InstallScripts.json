@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/Users/why/Documents/goLang/goServerRemake/cpp_server/build/_deps/nlohmann_json-subbuild/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

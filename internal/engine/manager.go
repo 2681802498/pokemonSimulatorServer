@@ -32,11 +32,13 @@ type EngineNode struct {
 	MaxCapacity   int32     `json:"max_capacity"`
 	ServerID      string    `json:"server_id,omitempty"` // C++ 实例运行的唯一 ID，用于检测重启
 
-	mu           sync.RWMutex
-	conn         *grpc.ClientConn
-	client       rpc.EngineClient
-	reconnectMu  sync.Mutex
-	reconnecting bool
+	mu                   sync.RWMutex
+	conn                 *grpc.ClientConn
+	client               rpc.EngineClient
+	reconnectMu          sync.Mutex
+	reconnecting         bool
+	reconnectFailures    int       // 连续重连失败次数
+	lastReconnectFailure time.Time // 最后一次重连失败的时间
 }
 
 // EngineNodeStatus 是对外暴露的节点状态快照。
@@ -350,13 +352,18 @@ func (e *EngineInstance) healthCheckLoop() {
 func (e *EngineInstance) checkAndTriggerReassign() {
 	status := e.GetStatus()
 	if status.Unhealthy > 0 {
-		e.mu.RLock()
-		fn := e.reassignFunc
-		e.mu.RUnlock()
-		if fn != nil {
-			slog.Warn("检测到 unhealthy Pod，触发房间重新分配", "unhealthy_count", status.Unhealthy)
-			go fn()
-		}
+		slog.Warn("检测到 unhealthy Pod，触发房间重新分配", "unhealthy_count", status.Unhealthy)
+		e.triggerReassignRooms()
+	}
+}
+
+// triggerReassignRooms 同步触发房间重新分配，确保迁移先于节点清理执行。
+func (e *EngineInstance) triggerReassignRooms() {
+	e.mu.RLock()
+	fn := e.reassignFunc
+	e.mu.RUnlock()
+	if fn != nil {
+		fn()
 	}
 }
 
@@ -400,6 +407,8 @@ func (e *EngineInstance) checkHeartbeat() {
 
 			if recErr := e.reconnect(i, addr); recErr != nil {
 				slog.Error("Pod 重连失败", "pod_index", i, "addr", addr, "error", recErr)
+				// 记录重连失败
+				e.recordReconnectFailure(i)
 			}
 		}
 	}
@@ -506,6 +515,64 @@ func (e *EngineInstance) shrinkReplicaCountIfNeeded() {
 	slog.Info("副本数已向下回退", "old_replicas", oldReplicas, "new_replicas", e.replicas)
 }
 
+// recordReconnectFailure 记录重连失败，失败超过1次时触发房间重新分配，失败2次则删除节点。
+func (e *EngineInstance) recordReconnectFailure(podIndex int) {
+	node := e.getNode(podIndex)
+	if node == nil {
+		return
+	}
+
+	node.incrementReconnectFailures()
+	failures := node.getReconnectFailures()
+
+	slog.Warn("记录 Pod 重连失败", "pod_index", podIndex, "failures", failures)
+
+	// 失败超过1次时触发房间重新分配
+	if failures > 1 {
+		slog.Warn("Pod 重连失败超过1次，触发房间重新分配", "pod_index", podIndex, "failures", failures)
+		e.triggerReassignRooms()
+	}
+
+	// 失败2次时删除节点
+	if failures >= 2 {
+		e.deleteNode(podIndex)
+	}
+}
+
+// resetReconnectFailures 重置节点的重连失败计数。
+func (e *EngineInstance) resetReconnectFailures(podIndex int) {
+	node := e.getNode(podIndex)
+	if node == nil {
+		return
+	}
+
+	failures := node.getReconnectFailures()
+	node.resetReconnectFailures()
+	if failures > 0 {
+		slog.Info("重连成功，重置失败计数", "pod_index", podIndex, "previous_failures", failures)
+	}
+}
+
+// deleteNode 从管理器中删除指定的节点。
+func (e *EngineInstance) deleteNode(podIndex int) {
+	e.mu.Lock()
+	node, ok := e.nodes[podIndex]
+	if !ok {
+		e.mu.Unlock()
+		return
+	}
+	delete(e.nodes, podIndex)
+	e.mu.Unlock()
+
+	slog.Warn("删除 Pod 节点（重连失败超过2次）", "pod_index", podIndex, "pod_name", node.PodName)
+
+	// 关闭连接
+	if conn := node.closeConn(); conn != nil {
+		rpc.Mgr.RemoveNode(podIndex)
+		_ = conn.Close()
+	}
+}
+
 // checkSingleNode 向指定 Pod 发起心跳请求，并刷新其状态信息。
 func (e *EngineInstance) checkSingleNode(podIndex int) error {
 	node := e.getNode(podIndex)
@@ -532,12 +599,7 @@ func (e *EngineInstance) checkSingleNode(podIndex int) error {
 	// markHealthy 返回 true 表示 ServerID 发生了变化（C++ 实例重启）
 	if serverIDChanged := node.markHealthy(hb); serverIDChanged {
 		slog.Warn("检测到 C++ 实例重启，触发房间重新分配", "pod_index", podIndex, "new_server_id", hb.ServerID)
-		e.mu.RLock()
-		fn := e.reassignFunc
-		e.mu.RUnlock()
-		if fn != nil {
-			go fn()
-		}
+		e.triggerReassignRooms()
 	}
 	return nil
 }
@@ -590,8 +652,13 @@ func (e *EngineInstance) attemptReconnectLoop(podIndex int, addr string) {
 		}
 
 		if err := e.connectAndRegisterPod(podIndex, addr); err == nil {
+			// 重连成功，重置失败计数
+			e.resetReconnectFailures(podIndex)
 			return
 		}
+
+		// 重连失败，增加计数并检查是否需要删除节点
+		e.recordReconnectFailure(podIndex)
 
 		time.Sleep(backoff)
 		backoff *= 2
@@ -633,6 +700,9 @@ func (e *EngineInstance) connectAndRegisterPod(podIndex int, addr string) error 
 	if oldConn != nil {
 		_ = oldConn.Close()
 	}
+
+	// 连接成功，重置失败计数
+	e.resetReconnectFailures(podIndex)
 
 	return nil
 }
@@ -721,6 +791,11 @@ func (n *EngineNode) markHealthy(hb *rpc.HeartbeatStatus) bool {
 	n.MaxCapacity = hb.MaxCapacity
 	n.ServerID = hb.ServerID
 
+	// 如果检测到重启，重置重连失败计数（防止删除新启动的节点）
+	if serverIDChanged {
+		n.reconnectFailures = 0
+	}
+
 	return serverIDChanged
 }
 
@@ -759,6 +834,25 @@ func (n *EngineNode) closeConn() *grpc.ClientConn {
 	n.conn = nil
 	n.client = nil
 	return conn
+}
+
+func (n *EngineNode) getReconnectFailures() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.reconnectFailures
+}
+
+func (n *EngineNode) incrementReconnectFailures() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.reconnectFailures++
+	n.lastReconnectFailure = time.Now()
+}
+
+func (n *EngineNode) resetReconnectFailures() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.reconnectFailures = 0
 }
 
 // getEnvString 从环境变量读取字符串值，或使用默认值。

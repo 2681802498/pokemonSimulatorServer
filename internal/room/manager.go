@@ -224,38 +224,54 @@ func (rm *RoomManager) DeleteRoom(roomID string) {
 	rm.mu.Unlock()
 
 	if status != RoomWaiting {
-		node, err := rm.EngineConn.GetNodeByPodIndex(targetNodeID)
-		if err == nil {
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						log.Printf("[Room] panic recovered during DestroyRoom for %s: %v", roomID, r)
-					}
-				}()
-
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
-				defer cancel()
-				resp, err := rpc.CallDestroyRoom(ctx, node.GetClient(), roomID)
-				if err != nil {
-					log.Printf("[Room] 战斗中销毁失败, RoomID: %s, Error: %v", roomID, err)
-					return
-				}
-
-				if resp == nil {
-					log.Printf("[Room] 战斗中销毁失败, RoomID: %s, resp == nil", roomID)
-					return
-				}
-
-				if resp.Code != 0 {
-					log.Printf("[Room] C++ 逻辑删除失败: %s (Code: %d)", resp.Message, resp.Code)
-				} else {
-					log.Printf("[Room] ✅ C++ 成功清理房间: %s", roomID)
-				}
-			}()
-		}
+		// 向目标节点发送销毁房间的请求
+		rm.sendDestroyRoomRequest(roomID, targetNodeID, "房间销毁")
 	} else {
 		log.Printf("[Room] 房间 %s 在等待中销毁，无需通知 C++", roomID)
 	}
+}
+
+// sendDestroyRoomRequest 向指定节点发送销毁房间的请求，异步执行。
+// 用于常规房间删除或房间迁移后销毁原节点的房间副本。
+func (rm *RoomManager) sendDestroyRoomRequest(roomID string, nodeID int, reason string) {
+	if rm.EngineConn == nil {
+		log.Printf("[Room] 销毁房间 %s 失败: EngineConn 未初始化", roomID)
+		return
+	}
+
+	node, err := rm.EngineConn.GetNodeByPodIndex(nodeID)
+	if err != nil {
+		log.Printf("[Room] 销毁房间 %s 失败: 节点 %d 不可用, 原因=%s, Error=%v", roomID, nodeID, reason, err)
+		return
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Room] panic recovered during DestroyRoom for %s: %v", roomID, r)
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		resp, err := rpc.CallDestroyRoom(ctx, node.GetClient(), roomID)
+		if err != nil {
+			log.Printf("[Room] 销毁房间 %s 失败 (节点=%d, 原因=%s): %v", roomID, nodeID, reason, err)
+			return
+		}
+
+		if resp == nil {
+			log.Printf("[Room] 销毁房间 %s 失败 (节点=%d, 原因=%s): resp == nil", roomID, nodeID, reason)
+			return
+		}
+
+		if resp.Code != 0 {
+			log.Printf("[Room] C++ 销毁房间 %s 失败 (节点=%d, 原因=%s): %s (Code: %d)", roomID, nodeID, reason, resp.Message, resp.Code)
+		} else {
+			log.Printf("[Room] ✅ C++ 成功清理房间: %s (节点=%d, 原因=%s)", roomID, nodeID, reason)
+		}
+	}()
 }
 
 // 获取房间列表
@@ -596,6 +612,10 @@ func (rm *RoomManager) ReassignRunningRoomsFromUnavailableNodes() (moved int, sk
 			cancel()
 
 			log.Printf("[Failover] ✅ 房间 %s (RoomPlaying) 成功重分配: %d -> %d (已向新 C++ 节点重新创建)", r.ID, oldNodeID, newNode.PodIndex)
+
+			// 销毁原节点中的房间副本，释放资源
+			rm.sendDestroyRoomRequest(r.ID, oldNodeID, "房间迁移")
+
 			moved++
 		} else {
 			// 对于等待中的房间，只需更新内存中的 NodeID，无需通知 C++

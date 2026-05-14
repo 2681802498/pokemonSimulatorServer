@@ -32,6 +32,7 @@ type GameRoom struct {
 	Sessions     map[string]*Session // key 为 PlayerID
 	Status       RoomStatus
 	NodeID       int
+	PrevNodeID   int
 	ReadyPlayers map[string]bool // 记录玩家是否已选择宝可梦
 	EngineConn   *engine.EngineInstance
 	mu           sync.Mutex
@@ -113,6 +114,7 @@ func (rm *RoomManager) CreateRoom(s *Session) (string, bool) {
 		NodeID:       0, // 先设置为0，后续会分配
 		ReadyPlayers: make(map[string]bool),
 		EngineConn:   rm.EngineConn,
+		PrevNodeID:   -1,
 	}
 	rm.Rooms[roomID] = newRoom
 
@@ -219,6 +221,7 @@ func (rm *RoomManager) DeleteRoom(roomID string) {
 
 	status := r.Status
 	targetNodeID := r.NodeID
+	prevNodeID := r.PrevNodeID
 
 	delete(rm.Rooms, roomID)
 	rm.mu.Unlock()
@@ -226,8 +229,19 @@ func (rm *RoomManager) DeleteRoom(roomID string) {
 	if status != RoomWaiting {
 		// 向目标节点发送销毁房间的请求
 		rm.sendDestroyRoomRequest(roomID, targetNodeID, "房间销毁")
+		// 若存在迁移前的旧节点，也尝试清理旧节点上的残留副本
+		if prevNodeID >= 0 && prevNodeID != targetNodeID {
+			rm.sendDestroyRoomRequest(roomID, prevNodeID, "房间销毁(旧节点)")
+		}
 	} else {
 		log.Printf("[Room] 房间 %s 在等待中销毁，无需通知 C++", roomID)
+	}
+
+	// 从 Redis 中删除房间快照（防止残留）
+	if rm.Store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = rm.Store.DeleteRoomSnapshot(ctx, roomID)
+		cancel()
 	}
 }
 
@@ -400,6 +414,7 @@ func (rm *RoomManager) restoreRoomSnapshot(snapshot store.RoomSnapshot) {
 		Sessions:     make(map[string]*Session),
 		ReadyPlayers: make(map[string]bool),
 		EngineConn:   rm.EngineConn,
+		PrevNodeID:   -1,
 	}
 
 	playerIDs := make(map[string]struct{}, len(snapshot.Players))
@@ -590,7 +605,9 @@ func (rm *RoomManager) ReassignRunningRoomsFromUnavailableNodes() (moved int, sk
 				continue
 			}
 
+			// 记录原节点，便于后续清理旧节点残留
 			r.mu.Lock()
+			r.PrevNodeID = oldNodeID
 			r.NodeID = newNode.PodIndex
 			r.mu.Unlock()
 

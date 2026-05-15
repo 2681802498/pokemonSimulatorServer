@@ -139,6 +139,53 @@ func buildBattleInitJSON(roomID string, sessions []*Session) (string, error) {
 	return string(data), nil
 }
 
+func (r *GameRoom) battleSideForPlayer(playerID string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.Sessions) == 0 {
+		return "", false
+	}
+
+	playerIDs := make([]string, 0, len(r.Sessions))
+	for id := range r.Sessions {
+		playerIDs = append(playerIDs, id)
+	}
+	sort.Strings(playerIDs)
+
+	if len(playerIDs) < 2 {
+		if playerIDs[0] == playerID {
+			return "a", true
+		}
+		return "", false
+	}
+
+	switch playerID {
+	case playerIDs[0]:
+		return "a", true
+	case playerIDs[1]:
+		return "b", true
+	default:
+		return "", false
+	}
+}
+
+func (r *GameRoom) injectBattleSide(rawAction json.RawMessage, playerID string) ([]byte, error) {
+	side, ok := r.battleSideForPlayer(playerID)
+	if !ok {
+		return nil, fmt.Errorf("无法识别玩家 side")
+	}
+
+	var action map[string]interface{}
+	if err := json.Unmarshal(rawAction, &action); err != nil {
+		return nil, err
+	}
+
+	action["side"] = side
+
+	return json.Marshal(action)
+}
+
 func (rm *RoomManager) HandleBattleAction(s *Session, rawAction json.RawMessage) {
 	if s.RoomID == "" {
 		s.SendResponse("battle_action_res", protocol.CodeRoomNotExist, "当前不在房间中", nil)
@@ -232,6 +279,12 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 		return
 	}
 
+	actionWithSide, err := r.injectBattleSide(rawAction, s.Player.ID)
+	if err != nil {
+		s.SendResponse("battle_action_res", protocol.CodeDataInvalid, fmt.Sprintf("action 处理失败: %v", err), nil)
+		return
+	}
+
 	node, err := r.EngineConn.GetNodeByPodIndex(targetNodeID)
 	if err != nil {
 		s.SendResponse("battle_action_res", protocol.CodeCppRPCError, "目标 C++ 节点不可用", nil)
@@ -241,7 +294,7 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	resp, err := rpc.CallSendCommand(ctx, node.GetClient(), r.ID, s.Player.ID, string(rawAction))
+	resp, err := rpc.CallSendCommand(ctx, node.GetClient(), r.ID, s.Player.ID, string(actionWithSide))
 	if err != nil {
 		s.SendResponse("battle_action_res", protocol.CodeCppRPCError, fmt.Sprintf("C++ 调用失败: %v", err), nil)
 		return
@@ -252,9 +305,21 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 		return
 	}
 
-	var turnResult interface{}
+	var turnResult map[string]interface{}
 	if err := json.Unmarshal([]byte(resp.Message), &turnResult); err != nil {
 		turnResult = map[string]interface{}{"raw": resp.Message}
+	}
+
+	waiting, _ := turnResult["waiting"].(bool)
+	if waiting {
+		if completedSide, ok := r.battleSideForPlayer(s.Player.ID); ok {
+			turnResult["completed_side"] = completedSide
+		}
+		turnResult["completed_player_id"] = s.Player.ID
+
+		s.SendResponse("battle_action_res", protocol.CodeSuccess, "动作已提交，等待对手", turnResult)
+		r.BroadcastToRoom("battle_state_push", protocol.CodeSuccess, "有玩家已提交动作，等待另一方", turnResult)
+		return
 	}
 
 	s.SendResponse("battle_action_res", protocol.CodeSuccess, "动作已提交", turnResult)

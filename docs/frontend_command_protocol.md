@@ -343,7 +343,7 @@
 
 ### 3.9 select_pokemon
 
-用途：选择 6 个宝可梦。
+用途：选择最多 6 个宝可梦。
 
 前端发送的数据结构：
 
@@ -355,37 +355,61 @@
       {
         "species_id": 25,
         "level": 50,
-        "ability": "static",
+        "nature": 10,
+        "ability": 66,
+        "item": 99,
+        "ivs": {"hp": 31, "attack": 31, "defense": 31, "specialAttack": 31, "specialDefense": 31, "speed": 31},
+        "evs": {"hp": 0, "attack": 0, "defense": 4, "specialAttack": 252, "specialDefense": 0, "speed": 252},
         "moves": [85, 98, 86, 87]
       },
       {
         "species_id": 6,
         "level": 50,
-        "ability": "blaze",
+        "nature": 10,
+        "ability": 66,
+        "item": 92,
+        "ivs": {"hp": 31, "attack": 31, "defense": 31, "specialAttack": 31, "specialDefense": 31, "speed": 31},
+        "evs": {"hp": 0, "attack": 0, "defense": 4, "specialAttack": 252, "specialDefense": 0, "speed": 252},
         "moves": [53, 9, 108, 241]
       },
       {
         "species_id": 9,
         "level": 50,
-        "ability": "torrent",
+        "nature": 15,
+        "ability": 67,
+        "item": 86,
+        "ivs": {"hp": 31, "attack": 31, "defense": 31, "specialAttack": 31, "specialDefense": 31, "speed": 31},
+        "evs": {"hp": 252, "attack": 0, "defense": 4, "specialAttack": 252, "specialDefense": 0, "speed": 0},
         "moves": [56, 57, 58, 59]
       },
       {
         "species_id": 3,
         "level": 50,
-        "ability": "overgrow",
+        "nature": 15,
+        "ability": 65,
+        "item": 87,
+        "ivs": {"hp": 31, "attack": 31, "defense": 31, "specialAttack": 31, "specialDefense": 31, "speed": 31},
+        "evs": {"hp": 4, "attack": 0, "defense": 0, "specialAttack": 252, "specialDefense": 0, "speed": 252},
         "moves": [71, 72, 73, 74]
       },
       {
         "species_id": 1,
         "level": 50,
-        "ability": "chlorophyll",
+        "nature": 3,
+        "ability": 47,
+        "item": 86,
+        "ivs": {"hp": 31, "attack": 31, "defense": 31, "specialAttack": 31, "specialDefense": 31, "speed": 31},
+        "evs": {"hp": 252, "attack": 252, "defense": 0, "specialAttack": 0, "specialDefense": 4, "speed": 0},
         "moves": [75, 76, 77, 78]
       },
       {
         "species_id": 131,
         "level": 50,
-        "ability": "water-absorb",
+        "nature": 3,
+        "ability": 47,
+        "item": 86,
+        "ivs": {"hp": 31, "attack": 31, "defense": 31, "specialAttack": 31, "specialDefense": 31, "speed": 31},
+        "evs": {"hp": 252, "attack": 252, "defense": 0, "specialAttack": 0, "specialDefense": 4, "speed": 0},
         "moves": [79, 80, 81, 82]
       }
     ]

@@ -50,10 +50,24 @@ type ReconnectResponse struct {
 
 // Pokemon 宝可梦信息
 type Pokemon struct {
-	SpeciesID int    `json:"species_id"`
-	Level     int    `json:"level"`
-	Ability   string `json:"ability"`
-	Moves     []int  `json:"moves"`
+	SpeciesID int          `json:"species_id"`
+	Level     int          `json:"level"`
+	Nature    int          `json:"nature"`
+	Ability   any          `json:"ability"`
+	Item      int          `json:"item"`
+	IVs       PokemonStats `json:"ivs"`
+	EVs       PokemonStats `json:"evs"`
+	Moves     []int        `json:"moves"`
+}
+
+// PokemonStats 宝可梦个体值/努力值
+type PokemonStats struct {
+	HP             int `json:"hp"`
+	Attack         int `json:"attack"`
+	Defense        int `json:"defense"`
+	SpecialAttack  int `json:"specialAttack"`
+	SpecialDefense int `json:"specialDefense"`
+	Speed          int `json:"speed"`
 }
 
 // SelectPokemonRequest 前端发送的宝可梦选择请求

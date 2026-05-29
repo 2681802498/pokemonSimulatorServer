@@ -1,5 +1,0 @@
-/Users/why/Documents/goLang/goServerRemake/cpp_server/build/CMakeFiles/cpp_compute_server.dir
-/Users/why/Documents/goLang/goServerRemake/cpp_server/build/CMakeFiles/edit_cache.dir
-/Users/why/Documents/goLang/goServerRemake/cpp_server/build/CMakeFiles/rebuild_cache.dir
-/Users/why/Documents/goLang/goServerRemake/cpp_server/build/_deps/nlohmann_json-build/CMakeFiles/edit_cache.dir
-/Users/why/Documents/goLang/goServerRemake/cpp_server/build/_deps/nlohmann_json-build/CMakeFiles/rebuild_cache.dir

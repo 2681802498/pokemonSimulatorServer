@@ -172,6 +172,11 @@ func main() {
 		slog.Error("HTTP Server 关闭失败", "error", err)
 	}
 
+	// 销毁所有房间：向 C++ 服务器发送销毁请求，清空内存
+	if rm != nil {
+		rm.DestroyAllRooms()
+	}
+
 	// 调用你 engine 里的逻辑，关闭所有 C++ 进程
 	engineConn.Shutdown()
 

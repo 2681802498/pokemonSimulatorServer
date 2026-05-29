@@ -1,8 +1,0 @@
-{
-  "actor": "Charizard",
-  "event": "action_start",
-  "move": "Pound",
-  "priority": 21,
-  "target": "Blastoise",
-  "type": "attack"
-}

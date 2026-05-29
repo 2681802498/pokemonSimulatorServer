@@ -210,52 +210,139 @@ func (rm *RoomManager) LeaveRoom(roomID string, s *Session) {
 // 删除房间
 func (rm *RoomManager) DeleteRoom(roomID string) {
 	log.Printf("开始销毁房间")
-	rm.mu.Lock()
+	// 先读取房间信息（不立即删除），确保能在 C++ 上正确销毁房间后再从内存中移除
+	rm.mu.RLock()
 	r, exists := rm.Rooms[roomID]
+	rm.mu.RUnlock()
 	if !exists {
-		rm.mu.Unlock()
 		return
 	}
 
 	status := r.Status
 	targetNodeID := r.NodeID
 
-	delete(rm.Rooms, roomID)
-	rm.mu.Unlock()
-
 	if status != RoomWaiting {
-		node, err := rm.EngineConn.GetNodeByPodIndex(targetNodeID)
-		if err == nil {
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						log.Printf("[Room] panic recovered during DestroyRoom for %s: %v", roomID, r)
-					}
-				}()
-
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
-				defer cancel()
-				resp, err := rpc.CallDestroyRoom(ctx, node.GetClient(), roomID)
-				if err != nil {
-					log.Printf("[Room] 战斗中销毁失败, RoomID: %s, Error: %v", roomID, err)
-					return
-				}
-
-				if resp == nil {
-					log.Printf("[Room] 战斗中销毁失败, RoomID: %s, resp == nil", roomID)
-					return
-				}
-
-				if resp.Code != 0 {
-					log.Printf("[Room] C++ 逻辑删除失败: %s (Code: %d)", resp.Message, resp.Code)
-				} else {
-					log.Printf("[Room] ✅ C++ 成功清理房间: %s", roomID)
-				}
-			}()
+		// 尝试同步在 C++ 上销毁房间，若成功再从内存中删除
+		ok := rm.sendDestroyRoomRequestSync(roomID, targetNodeID, "房间销毁")
+		if ok {
+			rm.mu.Lock()
+			delete(rm.Rooms, roomID)
+			rm.mu.Unlock()
+		} else {
+			// 若销毁失败，记录日志并仍然从内存中删除以避免阻塞业务（可根据需要改为重试/保留）
+			log.Printf("[Room] C++ 无法销毁房间 %s，稍后可能重试，先从内存中移除", roomID)
+			rm.mu.Lock()
+			delete(rm.Rooms, roomID)
+			rm.mu.Unlock()
 		}
 	} else {
 		log.Printf("[Room] 房间 %s 在等待中销毁，无需通知 C++", roomID)
+		rm.mu.Lock()
+		delete(rm.Rooms, roomID)
+		rm.mu.Unlock()
 	}
+}
+
+// DestroyAllRooms 优雅关闭时销毁内存中的所有房间，向 C++ 服务器发送销毁请求（异步）
+func (rm *RoomManager) DestroyAllRooms() {
+	rm.mu.RLock()
+	roomsToDestroy := make(map[string]int) // roomID -> nodeID
+	for roomID, room := range rm.Rooms {
+		roomsToDestroy[roomID] = room.NodeID
+	}
+	rm.mu.RUnlock()
+
+	// 向所有房间所在的 C++ 服务器发送销毁请求（异步，快速启动）
+	for roomID, nodeID := range roomsToDestroy {
+		rm.sendDestroyRoomRequest(roomID, nodeID, "graceful shutdown")
+	}
+
+	// 清空内存中的房间列表
+	rm.mu.Lock()
+	rm.Rooms = make(map[string]*GameRoom)
+	rm.mu.Unlock()
+
+	log.Printf("[Room] ✅ 已销毁内存中的 %d 个房间，向 C++ 服务器发送销毁请求", len(roomsToDestroy))
+}
+
+// sendDestroyRoomRequest 向指定节点发送销毁房间的请求，异步执行。
+// 用于常规房间删除或房间迁移后销毁原节点的房间副本。
+func (rm *RoomManager) sendDestroyRoomRequest(roomID string, nodeID int, reason string) {
+	if rm.EngineConn == nil {
+		log.Printf("[Room] 销毁房间 %s 失败: EngineConn 未初始化", roomID)
+		return
+	}
+
+	node, err := rm.EngineConn.GetNodeByPodIndex(nodeID)
+	if err != nil {
+		log.Printf("[Room] 销毁房间 %s 失败: 节点 %d 不可用, 原因=%s, Error=%v", roomID, nodeID, reason, err)
+		return
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Room] panic recovered during DestroyRoom for %s: %v", roomID, r)
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		resp, err := rpc.CallDestroyRoom(ctx, node.GetClient(), roomID)
+		if err != nil {
+			log.Printf("[Room] 销毁房间 %s 失败 (节点=%d, 原因=%s): %v", roomID, nodeID, reason, err)
+			return
+		}
+
+		if resp == nil {
+			log.Printf("[Room] 销毁房间 %s 失败 (节点=%d, 原因=%s): resp == nil", roomID, nodeID, reason)
+			return
+		}
+
+		if resp.Code != 0 {
+			log.Printf("[Room] C++ 销毁房间 %s 失败 (节点=%d, 原因=%s): %s (Code: %d)", roomID, nodeID, reason, resp.Message, resp.Code)
+		} else {
+			log.Printf("[Room] ✅ C++ 成功清理房间: %s (节点=%d, 原因=%s)", roomID, nodeID, reason)
+		}
+	}()
+}
+
+// sendDestroyRoomRequestSync 同步向指定节点发送销毁房间请求，最多重试若干次，返回是否成功。
+func (rm *RoomManager) sendDestroyRoomRequestSync(roomID string, nodeID int, reason string) bool {
+	if rm.EngineConn == nil {
+		log.Printf("[Room] 销毁房间 %s 失败: EngineConn 未初始化", roomID)
+		return false
+	}
+
+	node, err := rm.EngineConn.GetNodeByPodIndex(nodeID)
+	if err != nil {
+		log.Printf("[Room] 销毁房间 %s 失败: 节点 %d 不可用, 原因=%s, Error=%v", roomID, nodeID, reason, err)
+		return false
+	}
+
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		resp, err := rpc.CallDestroyRoom(ctx, node.GetClient(), roomID)
+		cancel()
+
+		if err != nil {
+			log.Printf("[Room] 销毁房间 %s 第 %d 次尝试失败 (节点=%d, 原因=%s): %v", roomID, attempt, nodeID, reason, err)
+		} else if resp == nil {
+			log.Printf("[Room] 销毁房间 %s 第 %d 次尝试失败 (节点=%d, 原因=%s): resp == nil", roomID, attempt, nodeID, reason)
+		} else if resp.Code != 0 {
+			log.Printf("[Room] C++ 销毁房间 %s 第 %d 次尝试失败 (节点=%d, 原因=%s): %s (Code: %d)", roomID, attempt, nodeID, reason, resp.Message, resp.Code)
+		} else {
+			log.Printf("[Room] ✅ C++ 成功清理房间: %s (节点=%d, 原因=%s)", roomID, nodeID, reason)
+			return true
+		}
+
+		// 重试间隔
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return false
 }
 
 // 获取房间列表
@@ -596,6 +683,20 @@ func (rm *RoomManager) ReassignRunningRoomsFromUnavailableNodes() (moved int, sk
 			cancel()
 
 			log.Printf("[Failover] ✅ 房间 %s (RoomPlaying) 成功重分配: %d -> %d (已向新 C++ 节点重新创建)", r.ID, oldNodeID, newNode.PodIndex)
+
+			// 销毁原节点中的房间副本，释放资源
+			// 注意：C++ 在 DestroyRoom 时会同时删除 Redis 中的 snapshot，所以销毁后需要重新保存快照
+			rm.sendDestroyRoomRequest(r.ID, oldNodeID, "房间迁移")
+
+			// 销毁后立即重新保存 Redis 快照，确保新节点能继续使用（防止 C++ 的 DestroyRoom 删除 Redis 数据）
+			ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+			if saveErr := rm.Store.SaveRoomSnapshot(ctx, updatedSnapshot); saveErr != nil {
+				log.Printf("[Failover] 房间 %s 销毁旧副本后重新保存 Redis 快照失败: %v", r.ID, saveErr)
+			} else {
+				log.Printf("[Failover] 房间 %s 销毁旧副本后成功恢复 Redis 快照", r.ID)
+			}
+			cancel()
+
 			moved++
 		} else {
 			// 对于等待中的房间，只需更新内存中的 NodeID，无需通知 C++

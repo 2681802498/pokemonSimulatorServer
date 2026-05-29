@@ -119,27 +119,16 @@ func buildBattleInitJSON(roomID string, sessions []*Session) (string, error) {
 
 	seed := int(crc32.ChecksumIEEE([]byte(roomID)))
 
-	// 转换玩家选择的宝可梦为 interface{} 数组
-	pokemonA := make([]interface{}, 0, len(sorted[0].SelectedPokemon))
-	for _, poke := range sorted[0].SelectedPokemon {
-		pokemonA = append(pokemonA, poke)
-	}
-
-	pokemonB := make([]interface{}, 0, len(sorted[1].SelectedPokemon))
-	for _, poke := range sorted[1].SelectedPokemon {
-		pokemonB = append(pokemonB, poke)
-	}
-
 	payload := map[string]interface{}{
-		"seed": seed,
 		"side_a": map[string]interface{}{
-			"name":    "Player-" + sorted[0].Player.ID,
-			"pokemon": pokemonA,
+			"name":    sorted[0].Player.ID,
+			"pokemon": sorted[0].SelectedPokemon,
 		},
 		"side_b": map[string]interface{}{
-			"name":    "Player-" + sorted[1].Player.ID,
-			"pokemon": pokemonB,
+			"name":    sorted[1].Player.ID,
+			"pokemon": sorted[1].SelectedPokemon,
 		},
+		"seed": seed,
 	}
 
 	data, err := json.Marshal(payload)
@@ -148,6 +137,53 @@ func buildBattleInitJSON(roomID string, sessions []*Session) (string, error) {
 	}
 
 	return string(data), nil
+}
+
+func (r *GameRoom) battleSideForPlayer(playerID string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.Sessions) == 0 {
+		return "", false
+	}
+
+	playerIDs := make([]string, 0, len(r.Sessions))
+	for id := range r.Sessions {
+		playerIDs = append(playerIDs, id)
+	}
+	sort.Strings(playerIDs)
+
+	if len(playerIDs) < 2 {
+		if playerIDs[0] == playerID {
+			return "a", true
+		}
+		return "", false
+	}
+
+	switch playerID {
+	case playerIDs[0]:
+		return "a", true
+	case playerIDs[1]:
+		return "b", true
+	default:
+		return "", false
+	}
+}
+
+func (r *GameRoom) injectBattleSide(rawAction json.RawMessage, playerID string) ([]byte, error) {
+	side, ok := r.battleSideForPlayer(playerID)
+	if !ok {
+		return nil, fmt.Errorf("无法识别玩家 side")
+	}
+
+	var action map[string]interface{}
+	if err := json.Unmarshal(rawAction, &action); err != nil {
+		return nil, err
+	}
+
+	action["side"] = side
+
+	return json.Marshal(action)
 }
 
 func (rm *RoomManager) HandleBattleAction(s *Session, rawAction json.RawMessage) {
@@ -243,6 +279,12 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 		return
 	}
 
+	actionWithSide, err := r.injectBattleSide(rawAction, s.Player.ID)
+	if err != nil {
+		s.SendResponse("battle_action_res", protocol.CodeDataInvalid, fmt.Sprintf("action 处理失败: %v", err), nil)
+		return
+	}
+
 	node, err := r.EngineConn.GetNodeByPodIndex(targetNodeID)
 	if err != nil {
 		s.SendResponse("battle_action_res", protocol.CodeCppRPCError, "目标 C++ 节点不可用", nil)
@@ -252,7 +294,7 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	resp, err := rpc.CallSendCommand(ctx, node.GetClient(), r.ID, s.Player.ID, string(rawAction))
+	resp, err := rpc.CallSendCommand(ctx, node.GetClient(), r.ID, s.Player.ID, string(actionWithSide))
 	if err != nil {
 		s.SendResponse("battle_action_res", protocol.CodeCppRPCError, fmt.Sprintf("C++ 调用失败: %v", err), nil)
 		return
@@ -263,9 +305,21 @@ func (r *GameRoom) forwardBattleAction(s *Session, rawAction json.RawMessage) {
 		return
 	}
 
-	var turnResult interface{}
+	var turnResult map[string]interface{}
 	if err := json.Unmarshal([]byte(resp.Message), &turnResult); err != nil {
 		turnResult = map[string]interface{}{"raw": resp.Message}
+	}
+
+	waiting, _ := turnResult["waiting"].(bool)
+	if waiting {
+		if completedSide, ok := r.battleSideForPlayer(s.Player.ID); ok {
+			turnResult["completed_side"] = completedSide
+		}
+		turnResult["completed_player_id"] = s.Player.ID
+
+		s.SendResponse("battle_action_res", protocol.CodeSuccess, "动作已提交，等待对手", turnResult)
+		r.BroadcastToRoom("battle_state_push", protocol.CodeSuccess, "有玩家已提交动作，等待另一方", turnResult)
+		return
 	}
 
 	s.SendResponse("battle_action_res", protocol.CodeSuccess, "动作已提交", turnResult)
@@ -300,19 +354,43 @@ func (r *GameRoom) HandleSelectPokemon(s *Session, rawData json.RawMessage) {
 		return
 	}
 
-	if len(req.Pokemon) != 6 {
-		s.SendResponse("select_pokemon_res", protocol.CodeDataInvalid, "必须选择 6 个宝可梦", nil)
+	if len(req.Pokemon) > 6 {
+		s.SendResponse("select_pokemon_res", protocol.CodeDataInvalid, "最多只能选择 6 个宝可梦", nil)
 		return
 	}
 
 	// 将选择的宝可梦转换为 map 存储
 	s.SelectedPokemon = make([]map[string]interface{}, 0, len(req.Pokemon))
 	for _, poke := range req.Pokemon {
+		ability, ok := poke.Ability.(float64)
+		if !ok {
+			s.SendResponse("select_pokemon_res", protocol.CodeDataInvalid, "ability 必须是数字", nil)
+			return
+		}
+
 		pokeMap := map[string]interface{}{
 			"speciesID": poke.SpeciesID,
 			"level":     poke.Level,
-			"ability":   poke.Ability,
-			"moves":     poke.Moves,
+			"nature":    poke.Nature,
+			"ability":   int(ability),
+			"item":      poke.Item,
+			"ivs": map[string]interface{}{
+				"hp":             poke.IVs.HP,
+				"attack":         poke.IVs.Attack,
+				"defense":        poke.IVs.Defense,
+				"specialAttack":  poke.IVs.SpecialAttack,
+				"specialDefense": poke.IVs.SpecialDefense,
+				"speed":          poke.IVs.Speed,
+			},
+			"evs": map[string]interface{}{
+				"hp":             poke.EVs.HP,
+				"attack":         poke.EVs.Attack,
+				"defense":        poke.EVs.Defense,
+				"specialAttack":  poke.EVs.SpecialAttack,
+				"specialDefense": poke.EVs.SpecialDefense,
+				"speed":          poke.EVs.Speed,
+			},
+			"moves": poke.Moves,
 		}
 		s.SelectedPokemon = append(s.SelectedPokemon, pokeMap)
 	}
@@ -335,6 +413,21 @@ func (r *GameRoom) HandleSelectPokemon(s *Session, rawData json.RawMessage) {
 	// 如果两个玩家都准备好，自动开始游戏
 	if allPlayersReady {
 		log.Printf("[Room] 房间 %s 两个玩家都已选择宝可梦，准备开始游戏", r.ID)
+
+		sessions := make([]*Session, 0, len(r.Sessions))
+		for _, session := range r.Sessions {
+			sessions = append(sessions, session)
+		}
+		sort.Slice(sessions, func(i, j int) bool {
+			return sessions[i].Player.ID < sessions[j].Player.ID
+		})
+
+		initJSON, err := buildBattleInitJSON(r.ID, sessions)
+		if err != nil {
+			log.Printf("[Room] 房间 %s 汇总宝可梦 JSON 失败: %v", r.ID, err)
+		} else {
+			r.BroadcastToRoom("pokemon_selection_summary", protocol.CodeSuccess, "双方宝可梦选择已汇总", json.RawMessage(initJSON))
+		}
 		r.StartGame(nil)
 	}
 }
